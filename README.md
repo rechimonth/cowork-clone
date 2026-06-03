@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # cowork-clone (MVP)
 
 ## Qué hace (Fase 1)
@@ -31,3 +32,6 @@ Opciones:
 - Añadir `audit_logger` más detallado.
 - Añadir herramientas adicionales (browser, automatización) en fases posteriores.
 
+=======
+# cowork-clone
+>>>>>>> c985f3a93feacc3122a35401973cfd6784eec96a
