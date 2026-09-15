@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # 1) Scan
     paths = scan_directory(root_dir, recursive=recursive)
-    items = build_file_items(root_dir, paths)
+    items = build_file_items(root_dir, paths, logger=logger)
 
     # 2) Plan
     planner_input = PlannerInput(root_dir=root_dir, files=items)

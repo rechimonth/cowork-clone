@@ -5,10 +5,15 @@ import pathlib
 import shutil
 from typing import Iterable
 
+from audit_logger import AuditLogger
 from models import ExecutionPlan
 
 
 SAFE_OPERATIONS = {"mkdir", "rename"}
+
+# Tope de intentos al buscar un nombre de destino libre. Evita un bucle infinito
+# si el directorio contiene una cantidad patológica de colisiones.
+MAX_UNIQUE_PATH_ATTEMPTS = 10000
 
 
 def _ensure_within_root(root_dir: pathlib.Path, target: pathlib.Path) -> None:
@@ -60,7 +65,47 @@ def _ensure_within_root(root_dir: pathlib.Path, target: pathlib.Path) -> None:
         raise ValueError(f"Ruta fuera del root permitido: {target}")
 
 
-def execute_plan(plan: ExecutionPlan, root_dir: str) -> None:
+def _find_unique_path(dst: pathlib.Path) -> pathlib.Path:
+    """Devuelve una ruta libre basada en ``dst`` agregando un sufijo numérico.
+
+    Si ``dst`` no existe se devuelve tal cual. Si ya existe se prueban
+    ``nombre_1.ext``, ``nombre_2.ext``, ... preservando el directorio y la
+    extensión. El contador crece indefinidamente (hasta
+    ``MAX_UNIQUE_PATH_ATTEMPTS``) para soportar muchas colisiones sin bucles
+    infinitos.
+
+    Es una decisión de producto: ante una colisión preferimos preservar ambos
+    archivos renombrando el entrante antes que abortar todo el plan.
+    """
+    if not dst.exists():
+        return dst
+
+    stem = dst.stem
+    suffix = dst.suffix
+    parent = dst.parent
+
+    for counter in range(1, MAX_UNIQUE_PATH_ATTEMPTS + 1):
+        candidate = parent / f"{stem}_{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+
+    raise FileExistsError(
+        f"No se encontró un nombre libre para {dst} tras "
+        f"{MAX_UNIQUE_PATH_ATTEMPTS} intentos"
+    )
+
+
+def execute_plan(
+    plan: ExecutionPlan,
+    root_dir: str,
+    logger: AuditLogger | None = None,
+) -> list[tuple[str, str]]:
+    """Ejecuta el plan aprobado. Devuelve los renombres efectivamente aplicados.
+
+    La lista de retorno contiene pares ``(src_original, dst_final)``. Es útil
+    para rollback y para reportar al usuario cuando hubo colisiones y el destino
+    final difiere del planificado.
+    """
     root_path = pathlib.Path(root_dir).resolve()
 
     # Validación de whitelist
@@ -75,6 +120,7 @@ def execute_plan(plan: ExecutionPlan, root_dir: str) -> None:
         dir_path.mkdir(parents=True, exist_ok=True)
 
     # (2) Renombrar archivos
+    applied: list[tuple[str, str]] = []
     for a in plan.rename_files:
         src = pathlib.Path(a.src)
         dst = pathlib.Path(a.dst)
@@ -85,11 +131,24 @@ def execute_plan(plan: ExecutionPlan, root_dir: str) -> None:
         if not src.exists():
             raise FileNotFoundError(f"No existe src para renombre: {src}")
 
+        final_dst = dst
         if dst.exists():
-            raise FileExistsError(
-                f"Destino ya existe, abortando para seguridad: {dst}"
-            )
+            # El destino ya existe: en vez de abortar el plan completo se
+            # desambigua el nombre para no pisar ni perder ningún archivo.
+            final_dst = _find_unique_path(dst)
+            if logger:
+                logger.log_event(
+                    "RENAME_COLLISION_RESOLVED",
+                    {
+                        "src": str(src),
+                        "requested_dst": str(dst),
+                        "final_dst": str(final_dst),
+                    },
+                )
 
         # rename atómico a nivel filesystem (si es el mismo device)
-        src.rename(dst)
+        src.rename(final_dst)
+        applied.append((str(src), str(final_dst)))
+
+    return applied
 

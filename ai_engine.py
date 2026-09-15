@@ -113,43 +113,161 @@ def _pydantic_validate_file_analysis(data: dict[str, Any]) -> FileAnalysis:
     return FileAnalysis.model_validate(data)
 
 
-def parse_file_analysis_json(raw_text: str) -> FileAnalysis:
-    data = _parse_json_object(raw_text)
-    return _pydantic_validate_file_analysis(data)
+def parse_file_analysis_json(raw_text: str, *, fallback_to: str | None = None) -> FileAnalysis:
+    """Parsea la respuesta cruda del LLM a un ``FileAnalysis``.
 
-
-def _parse_json_object(raw_text: str) -> dict[str, Any]:
-    text = str(raw_text or "").strip()
-    if not text:
-        raise ValueError("Ollama returned an empty response")
-
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
-    if fenced:
-        text = fenced.group(1).strip()
-
+    Es retrocompatible: para una respuesta válida devuelve el mismo resultado que
+    antes. Maneja explícitamente ``json.JSONDecodeError`` (y fallos de validación
+    Pydantic) y, si se pasa ``fallback_to``, devuelve un análisis de fallback en
+    lugar de propagar la excepción. ``safe_filename`` se aplica siempre como red
+    de seguridad para que el nombre sugerido nunca sea peligroso, incluso si el
+    JSON traía un nombre inválido.
+    """
     try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            if isinstance(parsed.get("response"), str):
-                return _parse_json_object(parsed["response"])
-            if isinstance(parsed.get("response"), dict):
-                return parsed["response"]
-            return parsed
-    except json.JSONDecodeError:
-        pass
+        analysis = None
+        for data in _iter_json_objects(raw_text):
+            try:
+                analysis = _pydantic_validate_file_analysis(data)
+                break
+            except (ValidationError, ValueError, TypeError):
+                # El objeto no cumple el schema; probamos con el siguiente.
+                continue
+        if analysis is None:
+            raise ValueError("No valid FileAnalysis JSON object found")
+    except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
+        if fallback_to is None:
+            raise
+        analysis = fallback_file_analysis(fallback_to)
 
-    decoder = json.JSONDecoder()
-    for match in re.finditer(r"\{", text):
+    safe_name = safe_filename(analysis.suggested_name)
+    if not safe_name:
+        safe_name = safe_filename(fallback_to or "untitled")
+    analysis.suggested_name = safe_name
+    return analysis
+
+
+def _unwrap_response_object(parsed: Any) -> dict[str, Any] | None:
+    """Desenvuelve el wrapper de Ollama ``{"response": ...}`` si está presente."""
+    if not isinstance(parsed, dict):
+        return None
+    model_response = parsed.get("response")
+    if isinstance(model_response, str):
+        return _parse_json_object(model_response)
+    if isinstance(model_response, dict):
+        return model_response
+    return parsed
+
+
+def _iter_brace_candidates(text: str):
+    """Genera substrings que comienzan en cada ``{`` y cierran balanceadamente.
+
+    Soporta texto antes y después del objeto JSON y respeta las comillas para no
+    confundir llaves que aparecen dentro de un string.
+    """
+    for start, ch in enumerate(text):
+        if ch != "{":
+            continue
+        depth = 0
+        quote: str | None = None
+        escaped = False
+        for i in range(start, len(text)):
+            current = text[i]
+            if escaped:
+                escaped = False
+                continue
+            if current == "\\":
+                escaped = True
+                continue
+            if quote:
+                if current == quote:
+                    quote = None
+                continue
+            if current in ("'", '"'):
+                quote = current
+                continue
+            if current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[start : i + 1]
+                    break
+
+
+def _normalize_json_like(candidate: str) -> str:
+    """Normaliza JSON "casi válido": comillas simples y literales de Python.
+
+    Se usa SOLO como último recurso cuando ``json.loads`` falla. No pretende ser
+    un parser general: cubre el caso común de modelos que devuelven comillas
+    simples en lugar de dobles.
+    """
+    normalized = candidate.replace("'", '"')
+    for py_literal, json_literal in (("True", "true"), ("False", "false"), ("None", "null")):
+        normalized = re.sub(rf"\b{py_literal}\b", json_literal, normalized)
+    return normalized
+
+
+def _try_parse_candidate(candidate: str) -> dict[str, Any] | None:
+    """Intenta parsear un candidato a dict probando JSON estricto y laxitud."""
+    for text in (candidate, _normalize_json_like(candidate)):
         try:
-            parsed, _ = decoder.raw_decode(text[match.start() :])
+            parsed = json.loads(text)
         except json.JSONDecodeError:
             continue
         if isinstance(parsed, dict):
-            if isinstance(parsed.get("response"), str):
-                return _parse_json_object(parsed["response"])
-            if isinstance(parsed.get("response"), dict):
-                return parsed["response"]
-            return parsed
+            unwrapped = _unwrap_response_object(parsed)
+            if unwrapped is not None:
+                return unwrapped
+    return None
+
+
+def _normalize_fences(text: str) -> str:
+    """Quita fences de markdown (con o sin cierre) y devuelve el contenido."""
+    fenced = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE
+    )
+    if fenced:
+        return fenced.group(1).strip()
+    # Fence abierto (sin cierre) o el modelo cortó la respuesta.
+    opening = re.search(r"```(?:json)?\s*", text, flags=re.IGNORECASE)
+    if opening:
+        return text[opening.end() :].strip()
+    return text
+
+
+def _iter_json_objects(raw_text: str):
+    """Genera los objetos JSON parseables de una respuesta de LLM, en orden.
+
+    Tolera texto antes/después del bloque, fences de markdown (incluso sin
+    cierre) y comillas simples. Se usa en ``parse_file_analysis_json`` para
+    poder descartar objetos que no cumplen el schema y seguir buscando.
+    """
+    text = str(raw_text or "").strip()
+    if not text:
+        return
+    text = _normalize_fences(text)
+
+    # Intento directo sobre el texto completo.
+    parsed = _try_parse_candidate(text)
+    if parsed is not None:
+        yield parsed
+
+    # Texto extra alrededor del bloque: llaves balanceadas.
+    for candidate in _iter_brace_candidates(text):
+        parsed = _try_parse_candidate(candidate)
+        if parsed is not None:
+            yield parsed
+
+
+def _parse_json_object(raw_text: str) -> dict[str, Any]:
+    """Extrae el primer objeto JSON válido de una respuesta de LLM.
+
+    Lanza ``ValueError`` si no hay ningún objeto parseable. El llamador
+    (``OllamaProvider.classify_document``) es responsable de aplicar el fallback
+    seguro con ``fallback_file_analysis`` ante ese error.
+    """
+    for parsed in _iter_json_objects(raw_text):
+        return parsed
 
     raise ValueError("No valid JSON object found in Ollama response")
 
@@ -233,8 +351,9 @@ class OllamaProvider:
 
         try:
             raw = self.generate(prompt)
-            analysis = parse_file_analysis_json(raw)
-            analysis.suggested_name = safe_filename(analysis.suggested_name)
+            # fallback_to provee una red de seguridad: si el JSON viene corrupto
+            # se devuelve un análisis de fallback en lugar de abortar el scan.
+            analysis = parse_file_analysis_json(raw, fallback_to=original_filename)
             if not analysis.suggested_name:
                 raise ValueError("suggested_name is empty")
             return analysis

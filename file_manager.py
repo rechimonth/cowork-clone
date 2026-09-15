@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from pypdf import PdfReader
+from pypdf.errors import PdfReadError, PdfStreamError
 
+from audit_logger import AuditLogger
 from models import FileItem
 
 
@@ -26,20 +28,44 @@ PDF_PREVIEW_MAX_CHARS = 2000
 PDF_PREVIEW_MAX_PAGES = 3
 
 
+def _log_file_error(
+    logger: AuditLogger | None,
+    event_type: str,
+    path: pathlib.Path,
+    exc: BaseException,
+) -> None:
+    """Registra un error de lectura sin volcar el contenido del archivo.
+
+    Solo se guarda la ruta y la representación de la excepción; nunca el texto
+    leído ni potenciales datos sensibles que contenga el documento.
+    """
+    if not logger:
+        return
+    logger.log_event(
+        event_type,
+        {"path": str(path), "exception": f"{type(exc).__name__}: {exc}"},
+    )
+
+
 def _safe_read_text(
-    path: pathlib.Path, max_chars: int = TEXT_PREVIEW_MAX_CHARS
+    path: pathlib.Path,
+    max_chars: int = TEXT_PREVIEW_MAX_CHARS,
+    logger: AuditLogger | None = None,
 ) -> str | None:
     try:
         # Intentamos UTF-8 primero
         data = path.read_text(encoding="utf-8", errors="ignore")
         data = data.strip()
         return data[:max_chars] if data else None
-    except Exception:
+    except (IOError, OSError, UnicodeDecodeError) as exc:
+        _log_file_error(logger, "FILE_READ_ERROR", path, exc)
         return None
 
 
 def _read_pdf_preview(
-    path: pathlib.Path, max_chars: int = PDF_PREVIEW_MAX_CHARS
+    path: pathlib.Path,
+    max_chars: int = PDF_PREVIEW_MAX_CHARS,
+    logger: AuditLogger | None = None,
 ) -> str | None:
     try:
         reader = PdfReader(str(path))
@@ -49,7 +75,9 @@ def _read_pdf_preview(
                 break
             try:
                 t = page.extract_text() or ""
-            except Exception:
+            except (PdfReadError, PdfStreamError, KeyError, ValueError) as exc:
+                # Una página corrupta no debe descartar el resto del PDF.
+                _log_file_error(logger, "PDF_PAGE_EXTRACT_ERROR", path, exc)
                 t = ""
             t = t.strip()
             if t:
@@ -59,7 +87,8 @@ def _read_pdf_preview(
                 break
         joined = "\n".join(texts).strip()
         return joined[:max_chars] if joined else None
-    except Exception:
+    except (IOError, OSError, PdfReadError, PdfStreamError, ValueError) as exc:
+        _log_file_error(logger, "PDF_READ_ERROR", path, exc)
         return None
 
 
@@ -80,7 +109,11 @@ def scan_directory(root_dir: str, recursive: bool = True) -> list[pathlib.Path]:
     return paths
 
 
-def build_file_items(root_dir: str, paths: Iterable[pathlib.Path]) -> list[FileItem]:
+def build_file_items(
+    root_dir: str,
+    paths: Iterable[pathlib.Path],
+    logger: AuditLogger | None = None,
+) -> list[FileItem]:
     root = pathlib.Path(root_dir).resolve()
     items: list[FileItem] = []
 
@@ -89,14 +122,15 @@ def build_file_items(root_dir: str, paths: Iterable[pathlib.Path]) -> list[FileI
         rel = None
         try:
             rel = str(p.resolve().relative_to(root))
-        except Exception:
+        except ValueError:
+            # El archivo no está bajo el root (p. ej. symlink que escapa).
             rel = None
 
         preview = None
         if ext in TEXT_EXTS:
-            preview = _safe_read_text(p)
+            preview = _safe_read_text(p, logger=logger)
         elif ext in PDF_EXTS:
-            preview = _read_pdf_preview(p)
+            preview = _read_pdf_preview(p, logger=logger)
 
         items.append(
             FileItem(
