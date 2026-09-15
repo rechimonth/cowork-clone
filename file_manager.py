@@ -13,8 +13,22 @@ from models import FileItem
 TEXT_EXTS = {".txt", ".md", ".csv", ".log"}
 PDF_EXTS = {".pdf"}
 
+# Máximo de caracteres de preview para archivos de texto: suficiente para que el
+# LLM clasifique el documento sin enviar el archivo completo al modelo.
+TEXT_PREVIEW_MAX_CHARS = 1200
 
-def _safe_read_text(path: pathlib.Path, max_chars: int = 1200) -> str | None:
+# Máximo de caracteres de preview para PDFs. Los PDFs son más verbosos por
+# página, así que se permite un preview algo mayor que en texto plano.
+PDF_PREVIEW_MAX_CHARS = 2000
+
+# Solo se procesan las primeras páginas del PDF para acotar el costo de
+# extracción de texto (los PDFs largos dominan el tiempo de escaneo).
+PDF_PREVIEW_MAX_PAGES = 3
+
+
+def _safe_read_text(
+    path: pathlib.Path, max_chars: int = TEXT_PREVIEW_MAX_CHARS
+) -> str | None:
     try:
         # Intentamos UTF-8 primero
         data = path.read_text(encoding="utf-8", errors="ignore")
@@ -24,12 +38,14 @@ def _safe_read_text(path: pathlib.Path, max_chars: int = 1200) -> str | None:
         return None
 
 
-def _read_pdf_preview(path: pathlib.Path, max_chars: int = 2000) -> str | None:
+def _read_pdf_preview(
+    path: pathlib.Path, max_chars: int = PDF_PREVIEW_MAX_CHARS
+) -> str | None:
     try:
         reader = PdfReader(str(path))
         texts: list[str] = []
         for i, page in enumerate(reader.pages):
-            if i >= 3:  # preview limitado para performance
+            if i >= PDF_PREVIEW_MAX_PAGES:  # preview limitado para performance
                 break
             try:
                 t = page.extract_text() or ""

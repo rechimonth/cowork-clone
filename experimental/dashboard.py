@@ -4,7 +4,7 @@ import argparse
 import os
 import sqlite3
 
-from metrics import get_metrics_summary
+from .metrics import get_metrics_summary
 
 try:
     from rich.console import Console

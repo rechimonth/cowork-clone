@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from browser_agent import BrowserAgent, BrowserSafetyError, BrowserSnapshot
+from .browser_agent import BrowserAgent, BrowserSafetyError, BrowserSnapshot
 from file_manager import build_file_items, scan_directory
 from models import ExecutionPlan, PlannerInput
 from planner import plan_actions

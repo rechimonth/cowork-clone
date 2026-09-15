@@ -16,6 +16,25 @@ from models import PlannerInput, PlannerOutput, ExecutionPlan, RenameAction, Cre
 MODEL_NAME = "qwen2.5:3b-instruct"
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
 
+# Timeout (segundos) de cada request HTTP al LLM. Un valor alto es tolerable
+# porque el HITL ocurre después; si el modelo no responde, se cae al fallback.
+DEFAULT_REQUEST_TIMEOUT_S = 60
+
+# Cantidad de intentos totales ante errores transitorios del proveedor LLM.
+DEFAULT_RETRIES = 3
+
+# Longitud máxima de un filename sugerido por el LLM (límite típico de
+# filesystem + margen para nombres largos generados por el modelo).
+MAX_FILENAME_LENGTH = 120
+
+# Truncado del preview que se envía dentro del prompt al LLM. Acota el costo
+# de tokens por archivo.
+PROMPT_PREVIEW_MAX_CHARS = 3000
+
+# Truncado del preview incluido en el prompt del planner (varios archivos a la
+# vez), por lo que es bastante más agresivo que PROMPT_PREVIEW_MAX_CHARS.
+PLANNER_PROMPT_PREVIEW_MAX_CHARS = 300
+
 
 class FileAnalysis(BaseModel):
     category: str
@@ -57,7 +76,7 @@ WINDOWS_RESERVED_NAMES = {
 }
 
 
-def safe_filename(value: str, max_length: int = 120) -> str:
+def safe_filename(value: str, max_length: int = MAX_FILENAME_LENGTH) -> str:
     raw = str(value or "")
     cleaned = raw.translate({ord(ch): None for ch in INVALID_FILENAME_CHARS})
     cleaned = re.sub(r"[\x00-\x1f]", "", cleaned)
@@ -140,8 +159,8 @@ class OllamaProvider:
         self,
         model: str = MODEL_NAME,
         endpoint: str = OLLAMA_ENDPOINT,
-        request_timeout_s: int = 60,
-        retries: int = 3,
+        request_timeout_s: int = DEFAULT_REQUEST_TIMEOUT_S,
+        retries: int = DEFAULT_RETRIES,
         audit_logger: AuditLogger | None = None,
     ):
         self.model = model
@@ -292,7 +311,7 @@ class OllamaProvider:
         preview_text: str | None,
         ext: str | None,
     ) -> str:
-        preview = (preview_text or "")[:3000]
+        preview = (preview_text or "")[:PROMPT_PREVIEW_MAX_CHARS]
         return (
             "Analiza este archivo y responde solamente JSON valido, sin markdown ni texto extra.\n"
             "El JSON debe tener exactamente estas claves: category, suggested_name, reason.\n"
@@ -365,7 +384,9 @@ def build_prompt(planner_input: PlannerInput) -> str:
             "path": f.path,
             "ext": f.ext,
             "filename": f.filename,
-            "preview_text": (f.preview_text[:300] if f.preview_text else None),
+"preview_text": (
+                f.preview_text[:PLANNER_PROMPT_PREVIEW_MAX_CHARS] if f.preview_text else None
+            ),
         }
         for f in planner_input.files
     ]
