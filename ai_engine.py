@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 import requests
 from pydantic import BaseModel, ValidationError
@@ -13,8 +15,14 @@ from audit_logger import AuditLogger
 from models import PlannerInput, PlannerOutput, ExecutionPlan, RenameAction, CreateDirAction
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
 MODEL_NAME = "qwen2.5:3b-instruct"
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
+
+# Hosts para los que HTTP en texto plano es aceptable (tráfico local).
+LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
 # Timeout (segundos) de cada request HTTP al LLM. Un valor alto es tolerable
 # porque el HITL ocurre después; si el modelo no responde, se cae al fallback.
@@ -272,20 +280,53 @@ def _parse_json_object(raw_text: str) -> dict[str, Any]:
     raise ValueError("No valid JSON object found in Ollama response")
 
 
+def _unsafe_http_warning(endpoint: str) -> str | None:
+    """Devuelve un mensaje si ``endpoint`` usa HTTP en texto plano fuera de local.
+
+    El tráfico HTTP no cifrado expone el prompt (que puede contener previews de
+    documentos del usuario) y la API key. Solo se tolera hacia localhost.
+    """
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "http":
+        return None
+    host = (parsed.hostname or "").lower()
+    if host in LOCALHOST_HOSTS or host.startswith("127."):
+        return None
+    return (
+        f"OLLAMA_ENDPOINT usa HTTP sin cifrado hacia '{host}': no es apto para "
+        "producción (prompt y API key viajarían en texto plano). Usá HTTPS."
+    )
+
+
 class OllamaProvider:
     def __init__(
         self,
         model: str = MODEL_NAME,
-        endpoint: str = OLLAMA_ENDPOINT,
+        endpoint: str | None = None,
         request_timeout_s: int = DEFAULT_REQUEST_TIMEOUT_S,
         retries: int = DEFAULT_RETRIES,
         audit_logger: AuditLogger | None = None,
+        api_key: str | None = None,
     ):
+        # La configuración por entorno permite apuntar a un Ollama remoto sin
+        # tocar código; los valores actuales se mantienen como default.
         self.model = model
-        self.endpoint = endpoint
+        self.endpoint = endpoint or os.getenv("OLLAMA_ENDPOINT", OLLAMA_ENDPOINT)
+        self.api_key = api_key if api_key is not None else os.getenv("OLLAMA_API_KEY")
         self.request_timeout_s = request_timeout_s
         self.retries = max(1, int(retries))
         self.audit_logger = audit_logger
+
+        warning = _unsafe_http_warning(self.endpoint)
+        if warning:
+            _LOGGER.warning(warning)
+            if self.audit_logger:
+                self.audit_logger.log_event("INSECURE_ENDPOINT", {"endpoint": self.endpoint})
+
+    def _request_headers(self) -> dict[str, str]:
+        if not self.api_key:
+            return {}
+        return {"Authorization": f"Bearer {self.api_key}"}
 
     def generate(self, prompt: str) -> str:
         last_error: Exception | None = None
@@ -304,6 +345,7 @@ class OllamaProvider:
                         "stream": False,
                         "format": "json",
                     },
+                    headers=self._request_headers(),
                     timeout=self.request_timeout_s,
                 )
                 duration = time.perf_counter() - started
