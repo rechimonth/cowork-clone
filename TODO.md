@@ -12,7 +12,11 @@
 - [x] Agregar `requirements.txt`.
 - [x] Agregar `README.md` con instrucciones para correr y probar.
 - [x] Probar localmente con una carpeta de ejemplo y verificar que NO se ejecuta nada sin Y/N.
-- [ ] Conectar un LLM real (Ollama/llama.cpp) + parseo robusto del JSON con Pydantic.
-- [ ] Añadir validación adicional: evitar colisiones de nombres y garantizar unicidad del destino.
+- [x] Conectar un LLM real (Ollama/llama.cpp) + parseo robusto del JSON con Pydantic.
+- [x] Añadir validación adicional: evitar colisiones de nombres y garantizar unicidad del destino.
+- [x] HITL con timeout (60s) y límite de entradas inválidas (aborta por seguridad).
+- [x] Endpoint/API key del LLM configurables por entorno (`OLLAMA_ENDPOINT`, `OLLAMA_API_KEY`).
+- [x] Desacoplar I/O (`CoworkAgent` + `AgentCallbacks`) para reutilizar el orquestador desde una API.
+- [ ] Exponer el agente como API FastAPI y aprobar el plan vía HTTP/WebSocket (frontend Tauri).
 
 
