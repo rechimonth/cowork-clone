@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cowork-clone"
+version = "0.2.0"
+description = "Agente autonomo tipo Claude Cowork: escanea, planifica y ejecuta operaciones seguras de archivos con HITL"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7.0",
+    "pypdf>=4.2.0",
+    "python-dotenv>=1.0.1",
+    "requests>=2.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "bandit[toml]>=1.7",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".git", "__pycache__", ".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "UP",        # pyupgrade
+    "B",         # flake8-bugbear
+    "C4",        # flake8-comprehensions
+    "SIM",       # flake8-simplify
+    "S",         # bandit (security)
+    "RUF",       # ruff-specific
+    "BLE",       # blind except
+]
+ignore = [
+    # Los prints son la interfaz CLI por defecto; el I/O es inyectable.
+    "T201",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]           # assert es el mecanismo de pytest
+"experimental/tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+ignore_missing_imports = true
+exclude = ["^experimental/", "^tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "experimental/tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "experimental/tests/*",
+    ".venv/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+# Umbral de calidad: por debajo de esto el cambio no es aceptable.
+fail_under = 85
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

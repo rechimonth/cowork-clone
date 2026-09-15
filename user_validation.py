@@ -1,12 +1,21 @@
+"""Human-in-the-Loop: presentacion del plan y aprobacion del usuario.
+
+Todo el I/O es inyectable (``input_fn`` / ``output_fn``) para poder sustituir
+la terminal por una peticion HTTP o un evento WebSocket en la futura API.
+Las decisiones por defecto son de rechazo: timeout, EOF o entradas invalidas
+repetidas abortan la operacion en lugar de aprobarla.
+"""
+
 from __future__ import annotations
 
+import contextlib
+import select
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from io import UnsupportedOperation
-from typing import Callable
 
 from models import ExecutionPlan
-
 
 # Tiempo máximo (segundos) que se espera la decisión del humano antes de
 # abortar por seguridad. Un agente desatendido no debe quedar bloqueado.
@@ -18,6 +27,14 @@ MAX_INVALID_INPUTS = 3
 
 @dataclass(frozen=True)
 class ApprovalDecision:
+    """Resultado del HITL.
+
+    ``decision`` es el motivo explicito ("approved", "rejected", "timeout",
+    "eof", "invalid_input_limit") para que quede registrado en el audit log.
+    Es *falsy* cuando no fue aprobado, de modo que ``if not decision`` es una
+    forma segura de comprobar la aprobacion.
+    """
+
     approved: bool
     decision: str
 
@@ -26,16 +43,23 @@ class ApprovalDecision:
 
 
 def _risk_for_rename(src: str, dst: str) -> str:
+    """Clasifica el riesgo de un renombre. En este MVP siempre es bajo.
+
+    Un renombre no destruye datos; el riesgo subiria si el sistema admitiera
+    sobrescrituras, cosa que la capa de ejecucion evita resolviendo colisiones.
+    """
     if src == dst:
         return "sin cambios"
     return "bajo"
 
 
 def _risk_for_mkdir() -> str:
+    """Clasifica el riesgo de crear una carpeta: siempre bajo (es aditivo)."""
     return "bajo"
 
 
 def format_plan(plan: ExecutionPlan) -> str:
+    """Resumen corto del plan (cantidad de renombres y carpetas)."""
     return "\n".join(
         [
             "PLAN PROPUESTO",
@@ -47,26 +71,30 @@ def format_plan(plan: ExecutionPlan) -> str:
 
 
 def format_plan_details(plan: ExecutionPlan) -> str:
+    """Detalle accion por accion, con motivo y nivel de riesgo de cada una.
+
+    Es lo que ve el humano al elegir ``[V]`` antes de aprobar o rechazar.
+    """
     lines: list[str] = ["DETALLE DEL PLAN", ""]
 
-    for action in plan.create_dirs:
+    for dir_action in plan.create_dirs:
         lines.extend(
             [
                 "ORIGEN: mkdir",
-                f"DESTINO: {action.dir_path}",
-                f"MOTIVO: {action.reason or 'No especificado'}",
+                f"DESTINO: {dir_action.dir_path}",
+                f"MOTIVO: {dir_action.reason or 'No especificado'}",
                 f"RIESGO: {_risk_for_mkdir()}",
                 "",
             ]
         )
 
-    for action in plan.rename_files:
+    for rename_action in plan.rename_files:
         lines.extend(
             [
-                f"ORIGEN: {action.src}",
-                f"DESTINO: {action.dst}",
-                f"MOTIVO: {action.reason or 'No especificado'}",
-                f"RIESGO: {_risk_for_rename(action.src, action.dst)}",
+                f"ORIGEN: {rename_action.src}",
+                f"DESTINO: {rename_action.dst}",
+                f"MOTIVO: {rename_action.reason or 'No especificado'}",
+                f"RIESGO: {_risk_for_rename(rename_action.src, rename_action.dst)}",
                 "",
             ]
         )
@@ -102,13 +130,8 @@ def _read_answer(
         except EOFError:
             return None, "eof"
 
-    try:
-        import select
-    except ImportError:  # plataformas sin select
-        select = None
-
     fd = None
-    if select is not None and sys.stdin is not None:
+    if sys.stdin is not None:
         try:
             fd = sys.stdin.fileno()
         except (AttributeError, ValueError, OSError, UnsupportedOperation):
@@ -116,10 +139,8 @@ def _read_answer(
 
     if fd is not None:
         output_fn(prompt)
-        try:
+        with contextlib.suppress(OSError, ValueError):
             sys.stdout.flush()
-        except (OSError, ValueError):
-            pass
         try:
             ready, _, _ = select.select([fd], [], [], timeout_s)
         except (OSError, ValueError):
@@ -166,9 +187,7 @@ def request_user_approval(
         answer, status = _read_answer(input_fn, APPROVAL_PROMPT, timeout_s, output_fn)
 
         if status == "timeout":
-            output_fn(
-                f"\nSin respuesta en {timeout_s}s. Se rechaza la operación por seguridad."
-            )
+            output_fn(f"\nSin respuesta en {timeout_s}s. Se rechaza la operación por seguridad.")
             return ApprovalDecision(approved=False, decision="timeout")
 
         if status == "eof":

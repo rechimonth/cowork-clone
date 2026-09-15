@@ -1,13 +1,17 @@
+"""Operaciones de filesystem permitidas, con validación de seguridad.
+
+Este módulo es el único punto del sistema que toca el filesystem. Aplica dos
+barreras independientes: una whitelist de tipos de operación (solo ``mkdir`` y
+``rename``, nunca borrados) y una validación de contención de rutas que impide
+salir del directorio raíz aprobado.
+"""
+
 from __future__ import annotations
 
-import os
 import pathlib
-import shutil
-from typing import Iterable
 
 from audit_logger import AuditLogger
 from models import ExecutionPlan
-
 
 SAFE_OPERATIONS = {"mkdir", "rename"}
 
@@ -90,8 +94,7 @@ def _find_unique_path(dst: pathlib.Path) -> pathlib.Path:
             return candidate
 
     raise FileExistsError(
-        f"No se encontró un nombre libre para {dst} tras "
-        f"{MAX_UNIQUE_PATH_ATTEMPTS} intentos"
+        f"No se encontró un nombre libre para {dst} tras {MAX_UNIQUE_PATH_ATTEMPTS} intentos"
     )
 
 
@@ -108,22 +111,26 @@ def execute_plan(
     """
     root_path = pathlib.Path(root_dir).resolve()
 
-    # Validación de whitelist
-    for op in [*map(lambda x: x.type, plan.create_dirs), *map(lambda x: x.type, plan.rename_files)]:
-        if op not in SAFE_OPERATIONS:
-            raise ValueError(f"Operación no permitida en plan: {op}")
+    # Validación de whitelist: se inspeccionan los tipos declarados en el plan
+    # antes de tocar el filesystem, de modo que una operación no permitida
+    # (delete, chmod, ...) aborte el plan completo sin efectos parciales.
+    declared_operations: list[str] = [a.type for a in plan.create_dirs]
+    declared_operations += [a.type for a in plan.rename_files]
+    for operation in declared_operations:
+        if operation not in SAFE_OPERATIONS:
+            raise ValueError(f"Operación no permitida en plan: {operation}")
 
     # (1) Crear carpetas
-    for a in plan.create_dirs:
-        dir_path = pathlib.Path(a.dir_path)
+    for create_action in plan.create_dirs:
+        dir_path = pathlib.Path(create_action.dir_path)
         _ensure_within_root(root_path, dir_path)
         dir_path.mkdir(parents=True, exist_ok=True)
 
     # (2) Renombrar archivos
     applied: list[tuple[str, str]] = []
-    for a in plan.rename_files:
-        src = pathlib.Path(a.src)
-        dst = pathlib.Path(a.dst)
+    for rename_action in plan.rename_files:
+        src = pathlib.Path(rename_action.src)
+        dst = pathlib.Path(rename_action.dst)
 
         _ensure_within_root(root_path, src)
         _ensure_within_root(root_path, dst)
@@ -151,4 +158,3 @@ def execute_plan(
         applied.append((str(src), str(final_dst)))
 
     return applied
-

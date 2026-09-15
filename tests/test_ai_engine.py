@@ -1,6 +1,11 @@
 from typing import Any
 
-from ai_engine import FileAnalysis, OllamaProvider, parse_file_analysis_json, safe_filename
+from ai_engine import (
+    FileAnalysis,
+    OllamaProvider,
+    parse_file_analysis_json,
+    safe_filename,
+)
 
 
 def test_safe_filename_windows_compatible():

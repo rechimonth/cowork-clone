@@ -4,7 +4,6 @@ from ai_engine import OllamaProvider, _unsafe_http_warning
 from models import ExecutionPlan
 from user_validation import ApprovalDecision, request_user_approval
 
-
 # --- Fase 3: configuración por entorno del proveedor LLM ---
 
 
@@ -65,7 +64,7 @@ def _outputs():
 
 
 def test_approval_accepts_valid_answers():
-    lines, out = _outputs()
+    _, out = _outputs()
     decision = request_user_approval(PLAN, input_fn=lambda _: "a", output_fn=out)
     assert decision.approved is True
     assert decision.decision == "approved"
@@ -73,7 +72,7 @@ def test_approval_accepts_valid_answers():
 
 
 def test_approval_rejects_on_r():
-    lines, out = _outputs()
+    _, out = _outputs()
     decision = request_user_approval(PLAN, input_fn=lambda _: "r", output_fn=out)
     assert decision.approved is False
     assert decision.decision == "rejected"
@@ -89,7 +88,7 @@ def test_approval_aborts_after_three_invalid_inputs():
 
 def test_approval_invalid_counter_resets_after_details():
     seq = iter(["zzz", "zzz", "v", "a"])
-    lines, out = _outputs()
+    _, out = _outputs()
     decision = request_user_approval(PLAN, input_fn=lambda _: next(seq), output_fn=out)
     assert decision.approved is True
 
@@ -98,7 +97,7 @@ def test_approval_rejects_on_eof():
     def raise_eof(_):
         raise EOFError
 
-    lines, out = _outputs()
+    _, out = _outputs()
     decision = request_user_approval(PLAN, input_fn=raise_eof, output_fn=out)
     assert decision.approved is False
     assert decision.decision == "eof"
@@ -119,7 +118,7 @@ def test_approval_provider_bypasses_terminal(monkeypatch):
 def test_approval_timeout_aborts_by_default(monkeypatch):
     # Simula select sin datos listos => timeout.
     monkeypatch.setattr("select.select", lambda *a, **k: ([], [], []))
-    lines, out = _outputs()
+    _, out = _outputs()
 
     class FakeStdin:
         def fileno(self):

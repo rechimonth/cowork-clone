@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
-except Exception:  # pragma: no cover - exercised when dependency is absent
+except ImportError:  # pragma: no cover - exercised when dependency is absent
     PlaywrightTimeoutError = TimeoutError
     sync_playwright = None
 

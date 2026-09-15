@@ -88,12 +88,8 @@ def test_execute_plan_resolves_collision_and_logs(tmp_path):
 
 def test_execute_plan_rejects_unsafe_operation(tmp_path):
     plan = ExecutionPlan(summary="x")
-    plan.create_dirs.append(
-        CreateDirAction(dir_path=str(tmp_path / "d"), reason=None)
-    )
-    plan.rename_files.append(
-        RenameAction(src=str(tmp_path / "a"), dst=str(tmp_path / "b"))
-    )
+    plan.create_dirs.append(CreateDirAction(dir_path=str(tmp_path / "d"), reason=None))
+    plan.rename_files.append(RenameAction(src=str(tmp_path / "a"), dst=str(tmp_path / "b")))
     # Se fuerza un tipo no permitido para verificar la whitelist.
     plan.rename_files[0].type = "delete"
     with pytest.raises(ValueError):

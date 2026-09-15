@@ -179,8 +179,7 @@ def get_metrics_summary(db_path: str) -> dict[str, Any]:
             """
         ).fetchall()
         summary["by_name"] = {
-            row["name"]: {"count": row["count"], "total_value": row["total_value"]}
-            for row in rows
+            row["name"]: {"count": row["count"], "total_value": row["total_value"]} for row in rows
         }
         summary["fallbacks"] = conn.execute(
             "SELECT COUNT(*) AS c FROM metrics WHERE fallback = 1"

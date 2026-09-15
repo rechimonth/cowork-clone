@@ -76,9 +76,7 @@ def test_agent_executes_when_approved(tmp_path):
 
     agent = CoworkAgent(
         root_dir=str(tmp_path),
-        callbacks=AgentCallbacks(
-            approval_provider=lambda plan: ApprovalDecision(True, "approved")
-        ),
+        callbacks=AgentCallbacks(approval_provider=lambda plan: ApprovalDecision(True, "approved")),
     )
     agent.run()
 

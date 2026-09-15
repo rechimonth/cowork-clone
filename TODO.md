@@ -17,6 +17,24 @@
 - [x] HITL con timeout (60s) y límite de entradas inválidas (aborta por seguridad).
 - [x] Endpoint/API key del LLM configurables por entorno (`OLLAMA_ENDPOINT`, `OLLAMA_API_KEY`).
 - [x] Desacoplar I/O (`CoworkAgent` + `AgentCallbacks`) para reutilizar el orquestador desde una API.
+- [x] Endurecer seguridad: path traversal, colisiones, saneamiento de nombres, whitelist de operaciones.
+- [x] Configurar calidad: `ruff`, `mypy`, `pytest-cov` con umbral, `bandit` y CI en GitHub Actions.
 - [ ] Exponer el agente como API FastAPI y aprobar el plan vía HTTP/WebSocket (frontend Tauri).
+
+## Fase 2 (Backend + Frontend)
+
+- [ ] `POST /scan` y `POST /plan` en FastAPI devolviendo el `ExecutionPlan` serializado.
+- [ ] `POST /approve` que resuelva `ApprovalDecision` sin bloquear la terminal.
+- [ ] Canal WebSocket para emitir progreso y recibir la decisión del frontend.
+- [ ] Autenticación y autorización por usuario antes de invocar `CoworkAgent`.
+- [ ] Ejecución en worker de fondo con estado consultable.
+- [ ] Cliente Tauri/React consumiendo la API.
+
+## Deuda técnica pendiente
+
+- [ ] Cerrar la ventana TOCTOU entre validación de rutas y ejecución (ver `SECURITY.md`).
+- [ ] Incorporar `experimental/browser_agent.py` y `dashboard.py` al flujo principal
+      cuando el camino base esté cerrado.
+- [ ] Evaluar si `storage_manager.py` debe reemplazar el log JSONL por consultas SQLite.
 
 

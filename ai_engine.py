@@ -1,19 +1,36 @@
+"""Capa LLM: cliente de Ollama, parseo robusto de JSON y fallbacks.
+
+El LLM **solo sugiere** (categoria y nombre de archivo). Ninguna decision de
+filesystem depende de su salida: el plan resultante pasa por
+Human-in-the-Loop y por la whitelist de ``os_commands``. Todo fallo del
+proveedor o del parseo degrada a un fallback seguro en lugar de propagarse.
+"""
+
 from __future__ import annotations
 
 import json
 import logging
 import os
+import pathlib
 import re
 import time
-from typing import Any, Protocol
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, ClassVar, Protocol
 from urllib.parse import urlparse
 
 import requests
 from pydantic import BaseModel, ValidationError
 
 from audit_logger import AuditLogger
-from models import PlannerInput, PlannerOutput, ExecutionPlan, RenameAction, CreateDirAction
-
+from models import (
+    CreateDirAction,
+    ExecutionPlan,
+    FileItem,
+    PlannerInput,
+    PlannerOutput,
+    RenameAction,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +47,11 @@ DEFAULT_REQUEST_TIMEOUT_S = 60
 
 # Cantidad de intentos totales ante errores transitorios del proveedor LLM.
 DEFAULT_RETRIES = 3
+
+# Paralelismo maximo al clasificar archivos con el LLM. Las llamadas son
+# I/O bound (HTTP), asi que un pool modesto ya reduce drasticamente el
+# tiempo total en carpetas con muchos PDFs sin saturar al proveedor.
+DEFAULT_LLM_MAX_WORKERS = 4
 
 # Longitud máxima de un filename sugerido por el LLM (límite típico de
 # filesystem + margen para nombres largos generados por el modelo).
@@ -85,11 +107,30 @@ WINDOWS_RESERVED_NAMES = {
 
 
 def safe_filename(value: str, max_length: int = MAX_FILENAME_LENGTH) -> str:
+    """Sanitiza un nombre de archivo sugerido por el LLM.
+
+    Elimina separadores de ruta y caracteres invalidos en Windows, descarta
+    caracteres de control (incluido el byte nulo), normaliza espacios, evita los
+    nombres reservados de Windows (``CON``, ``NUL``, ...) y acota la longitud
+    preservando la extension. Nunca devuelve una cadena vacia: usa
+    ``"untitled"`` como ultimo recurso.
+
+    Se neutralizan tambien los puntos iniciales: al quitar los separadores, una
+    entrada como ``../../etc/passwd`` quedaria como ``....etcpasswd``, que no es
+    una ruta valida pero si un nombre oculto y confuso. Se recortan los puntos
+    y espacios de ambos extremos para que el resultado sea siempre un nombre
+    simple, sin apariencia de ruta relativa.
+
+    Es la red de seguridad que impide que una alucinacion del modelo derive en
+    una ruta peligrosa o invalida.
+    """
     raw = str(value or "")
     cleaned = raw.translate({ord(ch): None for ch in INVALID_FILENAME_CHARS})
     cleaned = re.sub(r"[\x00-\x1f]", "", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    cleaned = cleaned.rstrip(". ")
+    # Se recortan los puntos de ambos extremos: evita nombres ocultos y
+    # cualquier parecido con ".."/"." tras eliminar los separadores de ruta.
+    cleaned = cleaned.strip(". ")
 
     if not cleaned:
         cleaned = "untitled"
@@ -104,16 +145,18 @@ def safe_filename(value: str, max_length: int = MAX_FILENAME_LENGTH) -> str:
             keep = max_length - len(ext)
             cleaned = f"{stem[:keep].rstrip('. ')}{ext}"
         else:
-            cleaned = cleaned[:max_length].rstrip(". ")
+            cleaned = cleaned[:max_length].strip(". ")
 
     return cleaned or "untitled"
 
 
 def fallback_file_analysis(original_filename: str) -> FileAnalysis:
-    try:
-        filename = str(original_filename or "unknown")
-    except Exception:
-        filename = "unknown"
+    """Analisis neutro que conserva el nombre original y no propone cambios.
+
+    Se usa cuando el LLM falla, responde algo no parseable o viola el schema:
+    ante la duda el agente prefiere no renombrar en vez de adivinar.
+    """
+    filename = str(original_filename or "unknown")
     return FileAnalysis(category="unknown", suggested_name=filename, reason="fallback")
 
 
@@ -166,7 +209,7 @@ def _unwrap_response_object(parsed: Any) -> dict[str, Any] | None:
     return parsed
 
 
-def _iter_brace_candidates(text: str):
+def _iter_brace_candidates(text: str) -> Iterator[str]:
     """Genera substrings que comienzan en cada ``{`` y cierran balanceadamente.
 
     Soporta texto antes y después del objeto JSON y respeta las comillas para no
@@ -231,9 +274,7 @@ def _try_parse_candidate(candidate: str) -> dict[str, Any] | None:
 
 def _normalize_fences(text: str) -> str:
     """Quita fences de markdown (con o sin cierre) y devuelve el contenido."""
-    fenced = re.search(
-        r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE
-    )
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
     if fenced:
         return fenced.group(1).strip()
     # Fence abierto (sin cierre) o el modelo cortó la respuesta.
@@ -243,7 +284,7 @@ def _normalize_fences(text: str) -> str:
     return text
 
 
-def _iter_json_objects(raw_text: str):
+def _iter_json_objects(raw_text: str) -> Iterator[dict[str, Any]]:
     """Genera los objetos JSON parseables de una respuesta de LLM, en orden.
 
     Tolera texto antes/después del bloque, fences de markdown (incluso sin
@@ -268,11 +309,16 @@ def _iter_json_objects(raw_text: str):
 
 
 def _parse_json_object(raw_text: str) -> dict[str, Any]:
-    """Extrae el primer objeto JSON válido de una respuesta de LLM.
+    """Extrae el primer objeto JSON válido de una respuesta cruda del LLM.
 
-    Lanza ``ValueError`` si no hay ningún objeto parseable. El llamador
-    (``OllamaProvider.classify_document``) es responsable de aplicar el fallback
-    seguro con ``fallback_file_analysis`` ante ese error.
+    Tolera texto antes y después del bloque, fences de markdown (incluso sin
+    cierre) y comillas simples, e intenta candidatos sucesivos respetando el
+    anidamiento de llaves.
+
+    Raises:
+        ValueError: Si la respuesta está vacía o no contiene ningún objeto JSON.
+            El llamador (``OllamaProvider.classify_document``) aplica entonces el
+            fallback seguro con ``fallback_file_analysis``.
     """
     for parsed in _iter_json_objects(raw_text):
         return parsed
@@ -311,8 +357,9 @@ class OllamaProvider:
         # La configuración por entorno permite apuntar a un Ollama remoto sin
         # tocar código; los valores actuales se mantienen como default.
         self.model = model
-        self.endpoint = endpoint or os.getenv("OLLAMA_ENDPOINT", OLLAMA_ENDPOINT)
-        self.api_key = api_key if api_key is not None else os.getenv("OLLAMA_API_KEY")
+        self.endpoint = endpoint or os.getenv("OLLAMA_ENDPOINT") or OLLAMA_ENDPOINT
+        api_key = api_key if api_key is not None else os.getenv("OLLAMA_API_KEY")
+        self.api_key: str | None = api_key or None
         self.request_timeout_s = request_timeout_s
         self.retries = max(1, int(retries))
         self.audit_logger = audit_logger
@@ -367,7 +414,15 @@ class OllamaProvider:
                 )
                 return response_text
 
-            except Exception as exc:
+            except (
+                requests.RequestException,
+                OllamaProviderError,
+                ValueError,
+                TypeError,
+            ) as exc:
+                # Se reintenta ante fallos de red/HTTP o respuestas invalidas.
+                # Cualquier otro error es un bug de programacion y debe
+                # propagarse en vez de consumir los reintentos.
                 duration = time.perf_counter() - started
                 last_error = exc
                 error_text = str(exc)
@@ -380,7 +435,9 @@ class OllamaProvider:
                     fallback=False,
                 )
 
-        raise OllamaProviderError(f"Ollama generation failed after {self.retries} retries: {last_error}")
+        raise OllamaProviderError(
+            f"Ollama generation failed after {self.retries} retries: {last_error}"
+        )
 
     def classify_document(
         self,
@@ -427,10 +484,16 @@ class OllamaProvider:
     def _extract_response_text(self, response: Any) -> str:
         raw_text = getattr(response, "text", "")
 
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
+        # El objeto puede no exponer ``json()`` (respuestas duck-typed o stubs),
+        # y cuando lo expone puede fallar al decodificar. En ambos casos se
+        # continua con el texto crudo en lugar de abortar la extraccion.
+        payload: Any = None
+        json_reader = getattr(response, "json", None)
+        if callable(json_reader):
+            try:
+                payload = json_reader()
+            except (ValueError, TypeError):
+                payload = None
 
         if isinstance(payload, dict):
             model_response = payload.get("response")
@@ -506,6 +569,61 @@ class OllamaProvider:
         )
 
 
+class FileAnalysisProvider(Protocol):
+    """Contrato de un proveedor de analisis de archivos.
+
+    Abstrae la fuente de la clasificacion para que el indexador documental
+    pueda funcionar con el LLM real (:class:`OllamaProvider`) o con el
+    clasificador deterministico offline sin cambiar sus llamadas.
+    """
+
+    def classify_document(
+        self,
+        original_filename: str,
+        preview_text: str | None = None,
+        ext: str | None = None,
+    ) -> FileAnalysis: ...
+
+
+class OfflineFileAnalysisProvider:
+    """Clasificador deterministico que no requiere red ni LLM.
+
+    Se usa como fallback cuando Ollama no esta disponible y como proveedor por
+    defecto en tests y en el indexador documental. Aplica reglas simples por
+    extension y sanea siempre el nombre resultante.
+    """
+
+    # Extension -> categoria inferida sin modelo.
+    CATEGORY_BY_EXT: ClassVar[dict[str, str]] = {
+        ".pdf": "document",
+        ".txt": "text",
+        ".md": "text",
+        ".csv": "spreadsheet",
+        ".log": "log",
+    }
+
+    def classify_document(
+        self,
+        original_filename: str,
+        preview_text: str | None = None,
+        ext: str | None = None,
+    ) -> FileAnalysis:
+        """Clasifica por extension conservando el nombre original.
+
+        Los parametros ``preview_text`` y ``ext`` existen para respetar el
+        contrato de :class:`FileAnalysisProvider`; este proveedor no los usa
+        porque su objetivo es ser determinista y barato.
+        """
+        filename = safe_filename(original_filename)
+        inferred_ext = (ext or pathlib.Path(filename).suffix).lower()
+        category = self.CATEGORY_BY_EXT.get(inferred_ext, "unknown")
+        return FileAnalysis(
+            category=category,
+            suggested_name=filename,
+            reason=f"Clasificacion offline por extension {inferred_ext or 'desconocida'}",
+        )
+
+
 class LLMClient(Protocol):
     def propose_plan(self, prompt: str) -> str:  # returns raw text
         ...
@@ -545,7 +663,7 @@ def build_prompt(planner_input: PlannerInput) -> str:
             "path": f.path,
             "ext": f.ext,
             "filename": f.filename,
-"preview_text": (
+            "preview_text": (
                 f.preview_text[:PLANNER_PROMPT_PREVIEW_MAX_CHARS] if f.preview_text else None
             ),
         }
@@ -562,41 +680,80 @@ def build_prompt(planner_input: PlannerInput) -> str:
     )
 
 
-def propose_execution_plan(planner_input: PlannerInput, llm: OllamaProvider | None = None) -> PlannerOutput:
-    """Genera ExecutionPlan usando el LLM SOLO para sugerencias.
+def _classify_pdfs(
+    provider: OllamaProvider,
+    pdfs: list[FileItem],
+    max_workers: int,
+) -> list[FileAnalysis]:
+    """Clasifica los PDFs con el LLM, en paralelo si hay más de uno.
+
+    Cada clasificación es una llamada HTTP con retries propios, así que el
+    paralelismo es I/O bound y seguro: ``OllamaProvider.classify_document`` no
+    comparte estado mutable más allá del logger de auditoría (que abre el
+    archivo en modo append por evento). El orden de retorno se preserva
+    respecto de ``pdfs`` para que el plan sea determinista.
+    """
+    if len(pdfs) <= 1 or max_workers <= 1:
+        return [
+            provider.classify_document(
+                original_filename=pathlib.Path(f.path).name,
+                preview_text=f.preview_text,
+                ext=f.ext,
+            )
+            for f in pdfs
+        ]
+
+    workers = min(max_workers, len(pdfs))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(
+                provider.classify_document,
+                original_filename=pathlib.Path(f.path).name,
+                preview_text=f.preview_text,
+                ext=f.ext,
+            )
+            for f in pdfs
+        ]
+        return [future.result() for future in futures]
+
+
+def propose_execution_plan(
+    planner_input: PlannerInput,
+    llm: OllamaProvider | None = None,
+    max_workers: int = DEFAULT_LLM_MAX_WORKERS,
+) -> PlannerOutput:
+    """Genera un ``ExecutionPlan`` usando el LLM SOLO para sugerencias.
 
     El LLM nunca decide acciones del sistema: solo clasifica y sugiere nombres.
     La ejecución real depende de Human-in-the-Loop + os_commands.
-    """
 
+    Args:
+        planner_input: Root autorizado y los archivos escaneados.
+        llm: Proveedor a usar; por defecto se crea un ``OllamaProvider``.
+        max_workers: Paralelismo máximo al clasificar PDFs. ``1`` desactiva el
+            pool y clasifica secuencialmente (útil para tests deterministas).
+    """
     provider = llm or OllamaProvider(audit_logger=None)
 
     pdfs = [f for f in planner_input.files if (f.ext or "").lower() == ".pdf"]
     creates: list[CreateDirAction] = []
     renames: list[RenameAction] = []
 
-    from pathlib import Path
-
-    pdf_dir = str((Path(planner_input.root_dir) / "PDFs").resolve())
+    pdf_dir = str((pathlib.Path(planner_input.root_dir) / "PDFs").resolve())
     creates.append(CreateDirAction(dir_path=pdf_dir, reason="Separación por tipo"))
 
-    for f in pdfs:
-        src = Path(f.path)
-        analysis = provider.classify_document(
-            original_filename=src.name,
-            preview_text=f.preview_text,
-            ext=f.ext,
-        )
+    analyses = _classify_pdfs(provider, pdfs, max_workers)
 
-        # FileAnalysis
-        suggested_name = analysis.suggested_name
-        suggested_name = safe_filename(suggested_name)
+    for f, analysis in zip(pdfs, analyses, strict=True):
+        src = pathlib.Path(f.path)
+
+        suggested_name = safe_filename(analysis.suggested_name)
 
         # asegurar extensión
         if (f.ext or "").lower() == ".pdf" and not suggested_name.lower().endswith(".pdf"):
             suggested_name = os.path.splitext(suggested_name)[0] + ".pdf"
 
-        dst = (Path(pdf_dir) / suggested_name).resolve()
+        dst = (pathlib.Path(pdf_dir) / suggested_name).resolve()
 
         if dst != src.resolve():
             renames.append(
@@ -614,5 +771,3 @@ def propose_execution_plan(planner_input: PlannerInput, llm: OllamaProvider | No
 
     plan = ExecutionPlan(summary=summary, create_dirs=creates, rename_files=renames)
     return PlannerOutput(plan=plan)
-
-

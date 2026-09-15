@@ -47,4 +47,3 @@ class AuditLogger:
                 "endpoint": endpoint,
             },
         )
-

@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import os
 import pathlib
 from dataclasses import dataclass
 from typing import Literal
-
-from models import ExecutionPlan
-
 
 ActionType = Literal["mkdir", "rename"]
 
@@ -98,9 +94,8 @@ class TransactionManager:
                             # No forzar rollback destructivo
                             pass
 
-            except Exception:
+            except (OSError, ValueError):
                 # rollback debe continuar, no detenerse
                 continue
 
         self._active = False
-

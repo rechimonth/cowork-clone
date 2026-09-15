@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .browser_agent import BrowserAgent, BrowserSafetyError, BrowserSnapshot
 from file_manager import build_file_items, scan_directory
 from models import ExecutionPlan, PlannerInput
 from planner import plan_actions
+
+from .browser_agent import BrowserAgent, BrowserSafetyError, BrowserSnapshot
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,7 @@ class SupervisorAgent:
             try:
                 file_plan = self.plan_files(root_dir, recursive=recursive)
                 notes.append("Plan de archivos generado. No fue ejecutado.")
-            except Exception as exc:
+            except (OSError, ValueError) as exc:
                 notes.append(f"No se pudo generar plan de archivos: {exc}")
 
         if url:
@@ -55,11 +56,13 @@ class SupervisorAgent:
                 notes.append("Página inspeccionada en modo solo lectura.")
             except BrowserSafetyError as exc:
                 notes.append(f"BrowserAgent bloqueó la URL: {exc}")
-            except Exception as exc:
+            except (OSError, ValueError) as exc:
                 notes.append(f"No se pudo inspeccionar URL: {exc}")
 
         if not root_dir and not url:
             notes.append("No se recibió root_dir ni url.")
 
-        notes.append("Toda ejecución debe pasar por Plan -> HITL -> TransactionManager -> Auditoría.")
+        notes.append(
+            "Toda ejecución debe pasar por Plan -> HITL -> TransactionManager -> Auditoría."
+        )
         return SupervisorReport(file_plan=file_plan, browser_snapshot=browser_snapshot, notes=notes)

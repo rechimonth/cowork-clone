@@ -3,12 +3,11 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass
@@ -119,7 +118,9 @@ class StorageManager:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO actions (plan_id, execution_id, action_type, source_path, target_path, status)
+                INSERT INTO actions
+                    (plan_id, execution_id, action_type, source_path, target_path,
+                     status)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (plan_id, execution_id, action_type, source_path, target_path, status),
@@ -152,4 +153,3 @@ class StorageManager:
                 """,
                 (status, finished_at or _utc_now_iso(), execution_id),
             )
-

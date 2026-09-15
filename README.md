@@ -43,8 +43,32 @@ python main.py "./mi_carpeta" --dry-run --log audit.jsonl
 ## Tests
 
 ```bash
-python -m pytest tests -q
+pytest --cov
 ```
+
+Cubre la suite principal y `experimental/tests`. Umbral mínimo de cobertura
+configurado en `pyproject.toml`.
+
+## Calidad
+
+```bash
+ruff check .     # lint
+ruff format .    # formato
+mypy .           # tipos
+bandit -r . -x ./tests,./experimental/tests
+```
+
+Todo esto corre en CI (`.github/workflows/ci.yml`) sobre Python 3.11 y 3.13.
+
+## Variables de entorno
+
+| Variable | Default | Descripción |
+| --- | --- | --- |
+| `OLLAMA_ENDPOINT` | `http://localhost:11434/api/generate` | Endpoint del LLM. Usar HTTPS fuera de localhost. |
+| `OLLAMA_API_KEY` | *(vacío)* | Se envía como `Authorization: Bearer`. |
+
+Si el endpoint usa HTTP sin cifrado y no apunta a localhost, el agente emite un
+warning y registra `INSECURE_ENDPOINT` en la auditoría.
 
 ## Estructura
 
@@ -59,10 +83,18 @@ python -m pytest tests -q
 - `transaction_manager.py`, `storage_manager.py`: soporte de rollback y persistencia (usados por tests).
 - `experimental/`: módulos exploratorios fuera del flujo principal.
 
+## Documentación
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): capas, invariantes de seguridad y camino a FastAPI + Tauri.
+- [`SECURITY.md`](SECURITY.md): modelo de amenazas, controles y limitaciones conocidas.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): setup, reglas del proyecto y flujo de verificación.
+- [`TODO.md`](TODO.md): estado de la Fase 1 y siguientes pasos.
+
 ## Próximas mejoras recomendadas
 
-- Validar el JSON del LLM con Pydantic de forma estricta en todos los caminos.
-- Exponer el agente como API (`FastAPI`) y desacoplar la aprobación HITL del terminal
-  para integrarla con un frontend de React/Tauri.
-- Añadir herramientas adicionales (browser, automatización) en fases posteriores.
+- Exponer el agente como API (`FastAPI`) y aprobar el plan vía HTTP/WebSocket
+  para integrarlo con un frontend de React/Tauri.
+- Endurecer la validación Pydantic del plan en el borde de la API.
+- Incorporar herramientas adicionales (browser, automatización) desde
+  `experimental/` cuando el flujo base esté cerrado.
 - Métricas y dashboard operativo (ver `experimental/`).

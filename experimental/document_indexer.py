@@ -1,6 +1,14 @@
+"""Indexador documental (experimental, fuera del flujo principal).
+
+Persiste en SQLite una ficha por documento con su clasificacion. Es la base
+para busquedas y memoria a largo plazo. No forma parte del ciclo
+scan -> plan -> HITL -> execute del MVP.
+"""
+
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -9,8 +17,17 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from ai_engine import FileAnalysis, FileAnalysisProvider, OfflineFileAnalysisProvider
+from pydantic import ValidationError
+
+from ai_engine import (
+    FileAnalysis,
+    FileAnalysisProvider,
+    OfflineFileAnalysisProvider,
+    OllamaProviderError,
+)
 from file_manager import build_file_items, scan_directory
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def utc_now_iso() -> str:
@@ -108,7 +125,8 @@ class DocumentIndexer:
     def _classify(self, filename: str, preview_text: str | None, ext: str | None) -> FileAnalysis:
         try:
             return self.provider.classify_document(filename, preview_text, ext)
-        except Exception:
+        except (OllamaProviderError, ValidationError, ValueError, TypeError):
+            # El proveedor LLM fallo: se degrada al analisis offline deterministico.
             return OfflineFileAnalysisProvider().classify_document(filename, preview_text, ext)
 
     def index_document(self, path: str, *, root_dir: str | None = None) -> DocumentRecord:
@@ -144,7 +162,9 @@ class DocumentIndexer:
 
     def _existing_document_id(self, path: str) -> str | None:
         with _connect(self.db_path) as conn:
-            row = conn.execute("SELECT document_id FROM documents WHERE path = ?", (path,)).fetchone()
+            row = conn.execute(
+                "SELECT document_id FROM documents WHERE path = ?", (path,)
+            ).fetchone()
         return row["document_id"] if row else None
 
     def _persist(self, record: DocumentRecord) -> None:
@@ -189,7 +209,9 @@ class DocumentIndexer:
         for path in paths:
             try:
                 records.append(self.index_document(str(path), root_dir=str(root)))
-            except Exception:
+            except (OSError, ValueError, ValidationError) as exc:
+                # Un archivo ilegible no debe abortar la indexacion completa.
+                _LOGGER.warning("No se pudo indexar %s: %s", path, exc)
                 continue
         return records
 
@@ -226,7 +248,9 @@ def index_directory(
     recursive: bool = True,
     provider: FileAnalysisProvider | None = None,
 ) -> list[DocumentRecord]:
-    return DocumentIndexer(db_path, provider=provider).index_directory(root_dir, recursive=recursive)
+    return DocumentIndexer(db_path, provider=provider).index_directory(
+        root_dir, recursive=recursive
+    )
 
 
 def search_documents(db_path: str, query: str, *, limit: int = 20) -> list[DocumentRecord]:
