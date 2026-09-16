@@ -37,6 +37,11 @@ def _wait_for_state(client, session_id, headers, states, timeout=20.0):
     )
 
 
+#: Estados que indican que el ciclo del agente terminó. Deben coincidir con el
+#: complemento de ``api.persistence.ACTIVE_STATES``.
+_TERMINAL_STATES = {"completed", "rejected", "failed", "expired"}
+
+
 def test_health_is_public(client):
     response = client.get("/health")
 
@@ -224,6 +229,39 @@ def test_delete_session_removes_it(client, root_dir, auth_headers):
 
     assert deleted.status_code == 204
     assert client.get(f"/sessions/{session['session_id']}", headers=auth_headers).status_code == 404
+
+
+def test_no_event_is_emitted_after_the_terminal_state(client, root_dir, auth_headers):
+    """El estado terminal es el último evento de la sesión.
+
+    Es la invariante de la que depende ``Session.running``: si después del
+    estado terminal no queda nada por emitir, entonces un estado terminal
+    implica que el worker ya hizo todo su trabajo y la sesión se puede borrar
+    sin esperar a que el hilo muera.
+
+    Este test es determinista a propósito. La versión original de la regresión
+    miraba el 409 de ``DELETE``, pero esa carrera necesita la carga de CI para
+    reproducirse y aquí pasaba siempre: un test que no falla con el código roto
+    no protege nada. Comprobar la invariante sí lo hace.
+    """
+    session = client.post(
+        "/sessions", json={"root_dir": str(root_dir), "dry_run": True}, headers=auth_headers
+    ).json()
+    session_id = session["session_id"]
+    _wait_for_state(client, session_id, auth_headers, {"completed", "failed"})
+
+    events = client.get(f"/sessions/{session_id}/events", headers=auth_headers).json()
+
+    terminal = [
+        index
+        for index, event in enumerate(events)
+        if event["type"] == "state" and event["data"].get("state") in _TERMINAL_STATES
+    ]
+    assert terminal, "la sesión debería haber emitido un estado terminal"
+    assert terminal[-1] == len(events) - 1, (
+        "se emitió un evento después del estado terminal, así que 'running' "
+        "no puede deducirse del estado"
+    )
 
 
 def test_delete_unknown_session_returns_404(client, auth_headers):

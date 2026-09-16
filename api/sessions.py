@@ -98,6 +98,7 @@ class Session:
     _approval_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _approval_decision: ApprovalDecision | None = field(default=None, repr=False)
     _thread: threading.Thread | None = field(default=None, repr=False)
+    _finished: threading.Event = field(default_factory=threading.Event, repr=False)
 
     # --- persistencia -------------------------------------------------------
 
@@ -216,6 +217,19 @@ class Session:
         self._thread.start()
 
     def _run(self) -> None:
+        # El hilo se registra al entrar y `_finished` se marca al salir, pase lo
+        # que pase. Es lo que hace fiable a `is_running`: el estado final se
+        # publica antes de terminar de emitir eventos, así que mirar solo el
+        # estado dejaría una ventana en la que la sesión ya es terminal pero el
+        # worker sigue vivo. En esa ventana un DELETE respondía 409 por un
+        # "sigue ejecutándose" que en realidad era un "todavía no terminó de
+        # contar lo que hizo".
+        try:
+            self._run_cycle()
+        finally:
+            self._finished.set()
+
+    def _run_cycle(self) -> None:
         agent = CoworkAgent(
             root_dir=str(self.root_dir),
             recursive=self.recursive,
@@ -256,11 +270,11 @@ class Session:
             self._persist()
 
             if self.dry_run:
-                self._set_state("completed")
                 self.emit("log", "DRY RUN: no se aplicó ningún cambio")
                 # El núcleo no llega a su propio registro de DRY_RUN porque la
                 # sesión se detiene aquí; lo emite la capa que tomó la decisión.
                 self._log("DRY_RUN", {"summary": self.plan.summary, "plan_id": self.plan.plan_id})
+                self._set_state("completed")
                 return
 
             self._set_state("awaiting_approval")
@@ -279,12 +293,12 @@ class Session:
             self._persist()
 
             if not decision.approved:
-                self._set_state("rejected")
                 self.emit(
                     "approval",
                     f"Plan rechazado ({decision.decision}). No se ejecutó nada.",
                     {"approved": False, "decision": decision.decision},
                 )
+                self._set_state("rejected")
                 return
 
             self._set_state("approved")
@@ -311,8 +325,8 @@ class Session:
             # estado + audit log.
             self.error = f"{type(exc).__name__}: {exc}"
             self._log("SESSION_ERROR", {"error": self.error})
-            self._set_state("failed")
             self.emit("error", self.error, {"error": self.error})
+            self._set_state("failed")
 
     # --- HITL ---------------------------------------------------------------
 
@@ -349,12 +363,26 @@ class Session:
 
     @property
     def running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        """Indica si el worker todavía tiene trabajo por hacer.
+
+        No basta con ``is_alive()``: el estado terminal se publica al final del
+        ciclo, y entre esa publicación y la muerte real del hilo quedan unos
+        milisegundos de *teardown*. En esa ventana ``is_alive()`` aún es True,
+        así que un ``DELETE`` respondía 409 "sigue ejecutándose" sobre una sesión
+        que el cliente ya veía terminada. Bajo carga (el runner de CI ejecutando
+        otros jobs en paralelo) esa ventana se estira y el fallo se vuelve
+        visible de forma intermitente.
+
+        Como ya no se emite ningún evento después del estado terminal, un estado
+        terminal implica que no queda nada por hacer y es seguro borrar.
+        """
+        if self._thread is None or not self._thread.is_alive():
+            return False
+        return self.state in ACTIVE_STATES
 
     def wait(self, timeout: float | None = None) -> None:
-        """Bloquea hasta que el worker termine. Solo para tests y shutdown."""
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
+        """Bloquea hasta que el ciclo del worker termine. Solo para tests y shutdown."""
+        self._finished.wait(timeout=timeout)
 
     def view(self) -> SessionView:
         return SessionView(
@@ -514,6 +542,9 @@ class SessionManager:
             )
         with self._lock:
             self._sessions.pop(session_id, None)
+        # Vaciar la cola antes de descartar el canal. Si se eliminara solo el
+        # historial, un WebSocket ya suscrito seguiría con su cola viva y podría
+        # bloquearse esperando eventos de una sesión que ya no existe.
         self.broker.drop(session_id)
         if self.store is not None:
             self.store.delete(session_id)
