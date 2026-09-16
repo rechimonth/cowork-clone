@@ -116,6 +116,22 @@ class EventBroker:
             return
         queue.put_nowait(event)
 
+    def seed(self, session_id: str, events: list[AgentEvent]) -> None:
+        """Repuebla el historial de una sesión desde el disco.
+
+        Se usa al arrancar: sin esto, un cliente que se reconecta tras un
+        reinicio recibiría el stream vacío y perdería todo el contexto anterior.
+        ``seq`` se eleva al máximo visto para que los eventos nuevos sigan la
+        numeración del histórico en lugar de repetir números.
+        """
+        if not events:
+            return
+        channel = self._channel(session_id)
+        with self._lock:
+            for event in events:
+                channel.history.append(event)
+            channel.seq = max(channel.seq, max(event.seq for event in events))
+
     def history(self, session_id: str, since: int = 0) -> list[AgentEvent]:
         """Eventos con ``seq`` mayor que ``since``, para reconexiones."""
         channel = self._channel(session_id)

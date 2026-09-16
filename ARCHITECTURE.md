@@ -88,7 +88,7 @@ preparado:
 - [x] Cliente React sobre el contrato de eventos ya publicado.
 - [x] Shell Tauri (`frontend/src-tauri/`) con CSP restringida a los orígenes locales del backend.
 - [ ] Verificar el empaquetado de Tauri en CI (requiere toolchain de Rust y dependencias nativas).
-- [ ] Persistencia de sesiones entre reinicios del backend.
+- [x] Persistencia de sesiones entre reinicios del backend.
 
 ## Backend FastAPI (`api/`)
 
@@ -103,7 +103,11 @@ sustituye los callbacks de I/O. Ese es el punto central del diseño.
 - `api/sessions.py`: `SessionManager` + `Session`. Cada sesión corre el ciclo del
   agente en un hilo propio y se sincroniza con el HITL mediante un `Event`.
 - `api/events.py`: `EventBroker`, puente entre el hilo del agente (síncrono) y
-  las colas asyncio de los WebSockets.
+  las colas asyncio de los WebSockets. `seed()` repuebla el historial desde disco
+  al arrancar.
+- `api/persistence.py`: `SessionStore` + `SessionSnapshot`. Estado en disco con
+  escritura atómica; el `session_id` se valida antes de construir rutas para que
+  un fichero manipulado no derive en path traversal.
 - `api/app.py`: `create_app(config)` — autenticación, endpoints REST y WebSocket.
 
 ### Invariantes del backend
@@ -117,6 +121,12 @@ sustituye los callbacks de I/O. Ese es el punto central del diseño.
 - Todo evento del agente se registra en un JSONL por sesión con `session_id` en
   cada línea, incluidos los que emite el núcleo (que no conoce el concepto de
   sesión).
+- Persistir es best-effort: un fallo de disco degrada a warning y la sesión
+  continúa. Perder histórico es menos grave que abortar un ciclo en curso.
+- Al recargar nunca se reanuda la ejecución. Una sesión con worker vivo pasa a
+  `expired`, porque reintentar un `rename` a ciegas podría mover archivos ya
+  movidos; y su `root_dir` se revalida contra la configuración *actual*, de modo
+  que endurecer `COWORK_ALLOWED_ROOTS` no reabra accesos antiguos.
 
 ### Riesgo conocido
 

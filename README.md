@@ -73,7 +73,7 @@ La configuración es explícita y sin valores peligrosos por defecto:
 | --- | --- | --- |
 | `COWORK_API_TOKEN` | *(ninguno)* | Obligatorio; sin él la API no arranca. Mínimo 16 caracteres. |
 | `COWORK_ALLOWED_ROOTS` | *(ninguno)* | Raíces permitidas, separadas por comas. Vacío = cualquiera salvo las rutas sensibles bloqueadas. |
-| `COWORK_STATE_DIR` | `./api-state` | Directorio de logs de auditoría por sesión. |
+| `COWORK_STATE_DIR` | `./api-state` | Directorio de estado: snapshots de sesión, historial de eventos y logs de auditoría. |
 | `COWORK_CORS_ORIGINS` | dev server de Vite + Tauri | Orígenes permitidos, separados por comas. |
 | `COWORK_APPROVAL_TIMEOUT_S` | `300` | Timeout del HITL: al expirar se rechaza por seguridad. |
 | `COWORK_ALLOW_INSECURE` | `false` | Permite correr sin token y sin TLS (solo para desarrollo local). |
@@ -89,6 +89,32 @@ Controles de seguridad destacados:
   subprotocolo WebSocket (útil para clientes que no pueden fijar cabeceras).
 - Los eventos de cada sesión quedan en un log JSONL correlacionado por
   `session_id`.
+
+## Persistencia entre reinicios
+
+Las sesiones viven en memoria, pero su estado sobrevive a un reinicio del
+backend. En `COWORK_STATE_DIR` se guarda, por sesión:
+
+- `<id>.json`: snapshot del estado (plan, decisión HITL, renombres aplicados).
+- `<id>.events.jsonl`: historial de eventos, para el replay del WebSocket.
+- `<id>.jsonl`: log de auditoría.
+
+Al arrancar, el servidor recarga lo persistido y:
+
+- Revalida cada `root_dir` contra la denylist y `COWORK_ALLOWED_ROOTS` actuales.
+  Una sesión cuyo directorio ya no existe, o que hoy estaría prohibido, se
+  descarta en lugar de reabrirse.
+- Marca como `expired` toda sesión que quedó en un estado con worker vivo
+  (`scanning`, `awaiting_approval`, `executing`, …). No se reanuda sola:
+  reintentar un `rename` a ciegas podría mover archivos ya movidos. Una sesión
+  `expired` ya no se puede aprobar (`409`).
+- Repuebla el historial de eventos, así que un cliente que se reconecta con
+  `?since=<seq>` recupera el hilo donde lo dejó.
+
+Las escrituras del snapshot son atómicas (`tmp` + `os.replace`), y los ficheros
+corruptos o cortados se descartan reportándolo en el log sin impedir el arranque.
+Un fallo de disco no aborta el agente: se registra como warning y la sesión
+continúa.
 
 ## Frontend (React + Tauri)
 

@@ -13,6 +13,7 @@ el worker **rechaza** la operación por seguridad, igual que hace el CLI.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -21,8 +22,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from ai_engine import FileAnalysisProvider, OfflineFileAnalysisProvider
-from api.config import ApiConfig
+from api.config import ApiConfig, ConfigurationError, validate_root_dir
 from api.events import EventBroker
+from api.persistence import ACTIVE_STATES, SessionSnapshot, SessionStore, is_safe_session_id
 from api.schemas import (
     ApprovalView,
     CreateDirView,
@@ -34,6 +36,8 @@ from audit_logger import AuditLogger
 from main import AgentCallbacks, CoworkAgent
 from models import ExecutionPlan
 from user_validation import ApprovalDecision
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class SessionNotFoundError(KeyError):
@@ -79,6 +83,7 @@ class Session:
     logger: AuditLogger
     approval_timeout_s: int
     llm: FileAnalysisProvider | None = None
+    store: SessionStore | None = None
 
     state: str = "created"
     created_at: str = field(default_factory=_now)
@@ -94,16 +99,109 @@ class Session:
     _approval_decision: ApprovalDecision | None = field(default=None, repr=False)
     _thread: threading.Thread | None = field(default=None, repr=False)
 
+    # --- persistencia -------------------------------------------------------
+
+    def snapshot(self) -> SessionSnapshot:
+        return SessionSnapshot(
+            session_id=self.session_id,
+            root_dir=str(self.root_dir),
+            recursive=self.recursive,
+            dry_run=self.dry_run,
+            name=self.name,
+            state=self.state,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+            file_count=self.file_count,
+            event_count=self.event_count,
+            plan=self.plan.model_dump() if self.plan is not None else None,
+            approval=self.approval,
+            applied=[RenameView(src=src, dst=dst) for src, dst in self.applied],
+            error=self.error,
+        )
+
+    def _persist(self) -> None:
+        """Guarda el snapshot, degradando a warning si el disco falla.
+
+        Perder el histórico es menos grave que abortar una sesión en curso, así
+        que un fallo de escritura se registra y no interrumpe al agente.
+        """
+        if self.store is None:
+            return
+        try:
+            self.store.save(self.snapshot())
+        except (OSError, ValueError) as exc:
+            _LOGGER.warning("No se pudo persistir la sesión %s: %s", self.session_id, exc)
+            self._log("PERSISTENCE_ERROR", {"error": f"{type(exc).__name__}: {exc}"})
+
+    @classmethod
+    def restore(
+        cls,
+        snapshot: SessionSnapshot,
+        *,
+        root_dir: Path,
+        broker: EventBroker,
+        logger: AuditLogger,
+        approval_timeout_s: int,
+        store: SessionStore,
+        llm: FileAnalysisProvider | None = None,
+    ) -> Session:
+        """Reconstruye una sesión desde su snapshot, sin worker asociado."""
+        session = cls(
+            session_id=snapshot.session_id,
+            root_dir=root_dir,
+            recursive=snapshot.recursive,
+            dry_run=snapshot.dry_run,
+            name=snapshot.name,
+            broker=broker,
+            logger=logger,
+            approval_timeout_s=approval_timeout_s,
+            llm=llm,
+            store=store,
+            state=snapshot.state,
+            created_at=snapshot.created_at,
+            updated_at=snapshot.updated_at,
+            file_count=snapshot.file_count,
+            event_count=snapshot.event_count,
+            approval=snapshot.approval,
+            error=snapshot.error,
+        )
+        session.applied = [(view.src, view.dst) for view in snapshot.applied]
+        if snapshot.plan is not None:
+            session.plan = ExecutionPlan.model_validate(snapshot.plan)
+        return session
+
+    def mark_interrupted(self) -> None:
+        """Marca como ``expired`` una sesión cuyo worker murió con el proceso.
+
+        Al reiniciar el backend no hay hilo que continúe la sesión. Dejarla en
+        ``executing`` o ``awaiting_approval`` haría que la UI mostrara un
+        progreso que ya no va a ocurrir, y peor: alguien podría "aprobar" un
+        plan que nunca se va a ejecutar. Se degrada a ``expired``, que es
+        terminal y honesto sobre lo que pasó.
+        """
+        previous = self.state
+        self.error = "El backend se reinició y la sesión quedó interrumpida."
+        self._log("SESSION_INTERRUPTED", {"previous_state": previous})
+        self._set_state("expired")
+
     # --- emisión de eventos -------------------------------------------------
 
     def emit(self, event_type: str, message: str, data: dict | None = None) -> None:
         self.event_count += 1
-        self.broker.emit(self.session_id, event_type, message, data)
+        event = self.broker.emit(self.session_id, event_type, message, data)
+        if self.store is not None:
+            try:
+                self.store.append_event(self.session_id, event)
+            except (OSError, ValueError) as exc:
+                _LOGGER.warning(
+                    "No se pudo persistir el evento %s de %s: %s", event_type, self.session_id, exc
+                )
 
     def _set_state(self, state: str) -> None:
         self.state = state
         self.updated_at = _now()
         self.emit("state", f"Estado: {state}", {"state": state})
+        self._persist()
 
     def _log(self, event_type: str, payload: dict | None = None) -> None:
         self.logger.log_event(event_type, payload)
@@ -155,6 +253,7 @@ class Session:
                 f"{plan_view.mkdir_count} carpeta(s)",
                 plan_view.model_dump(),
             )
+            self._persist()
 
             if self.dry_run:
                 self._set_state("completed")
@@ -177,6 +276,7 @@ class Session:
                 decision=decision.decision,
                 decided_at=_now(),
             )
+            self._persist()
 
             if not decision.approved:
                 self._set_state("rejected")
@@ -201,6 +301,7 @@ class Session:
                     ]
                 },
             )
+            self._persist()
             self._set_state("completed")
 
         except Exception as exc:  # noqa: BLE001 - frontera del hilo: nada puede escapar
@@ -275,7 +376,12 @@ class Session:
 
 
 class SessionManager:
-    """Registro de sesiones activas, con límite de capacidad."""
+    """Registro de sesiones activas, con límite de capacidad.
+
+    Si se le pasa un :class:`SessionStore`, las sesiones sobreviven a un
+    reinicio: al arrancar se reconstruyen desde disco y se recarga su historial
+    de eventos para que el replay del WebSocket siga siendo correcto.
+    """
 
     def __init__(
         self,
@@ -283,16 +389,73 @@ class SessionManager:
         broker: EventBroker | None = None,
         agent_factory: Callable[..., CoworkAgent] = CoworkAgent,
         llm: FileAnalysisProvider | None = None,
+        store: SessionStore | None = None,
     ) -> None:
         self.config = config
         self.broker = broker or EventBroker()
         self.agent_factory = agent_factory
+        self.store = store
         # Por defecto la API clasifica offline: una sesión HTTP no puede quedar
         # colgada esperando a que Ollama responda. Para usar el LLM real, pasar
         # ``OllamaProvider()`` explícitamente.
         self.llm = llm if llm is not None else OfflineFileAnalysisProvider()
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
+
+    def _new_logger(self, session_id: str) -> AuditLogger:
+        return AuditLogger(
+            str(self.config.state_dir / f"{session_id}.jsonl"), session_id=session_id
+        )
+
+    def restore(self) -> list[str]:
+        """Reconstruye las sesiones persistidas. Devuelve los problemas hallados.
+
+        Solo se recarga el estado; nunca se reanuda la ejecución. Una sesión que
+        quedó a medias se marca ``expired`` en vez de reintentarse, porque
+        reintentar un ``rename`` a ciegas podría mover archivos ya movidos.
+        """
+        if self.store is None:
+            return []
+
+        snapshots, problems = self.store.load_all()
+        for snapshot in snapshots:
+            sid = snapshot.session_id
+
+            if not is_safe_session_id(sid):
+                problems.append(f"{sid}: session_id no seguro, se omite")
+                continue
+
+            # El root se revalida contra la configuración *actual*: pudo cambiar
+            # `COWORK_ALLOWED_ROOTS` entre reinicios, o el directorio pudo
+            # borrarse. Recargar una sesión cuyo root ya no es aceptable
+            # reabriría un acceso que hoy está prohibido.
+            try:
+                root = validate_root_dir(snapshot.root_dir, self.config.allowed_roots)
+            except ConfigurationError as exc:
+                problems.append(f"{sid}: root inválido, se omite ({exc})")
+                continue
+
+            session = Session.restore(
+                snapshot,
+                root_dir=root,
+                broker=self.broker,
+                logger=self._new_logger(sid),
+                approval_timeout_s=self.config.approval_timeout_s,
+                store=self.store,
+                llm=self.llm,
+            )
+
+            events, event_problems = self.store.load_events(sid)
+            problems.extend(f"{sid}: {p}" for p in event_problems)
+            self.broker.seed(sid, events)
+
+            with self._lock:
+                self._sessions[sid] = session
+
+            if snapshot.state in ACTIVE_STATES:
+                session.mark_interrupted()
+
+        return problems
 
     def create(
         self,
@@ -317,11 +480,10 @@ class SessionManager:
                 dry_run=dry_run,
                 name=name,
                 broker=self.broker,
-                logger=AuditLogger(
-                    str(self.config.state_dir / f"{session_id}.jsonl"), session_id=session_id
-                ),
+                logger=self._new_logger(session_id),
                 approval_timeout_s=self.config.approval_timeout_s,
                 llm=self.llm,
+                store=self.store,
             )
             self._sessions[session_id] = session
 
@@ -330,6 +492,7 @@ class SessionManager:
             {"root_dir": str(root_dir), "recursive": recursive, "dry_run": dry_run},
         )
         session.emit("log", f"Sesión creada sobre {root_dir}")
+        session._persist()
         return session
 
     def get(self, session_id: str) -> Session:
@@ -352,6 +515,8 @@ class SessionManager:
         with self._lock:
             self._sessions.pop(session_id, None)
         self.broker.drop(session_id)
+        if self.store is not None:
+            self.store.delete(session_id)
 
     def shutdown(self) -> None:
         """Espera a que terminen las sesiones en curso (apagado ordenado)."""

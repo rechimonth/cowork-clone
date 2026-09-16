@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -33,6 +34,7 @@ from fastapi.responses import JSONResponse
 
 from api.config import ApiConfig, ConfigurationError, validate_root_dir
 from api.events import EventBroker
+from api.persistence import SessionStore
 from api.schemas import (
     AgentEvent,
     ApprovalRequest,
@@ -79,7 +81,8 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     cfg.state_dir.mkdir(parents=True, exist_ok=True)
 
     broker = EventBroker()
-    manager = SessionManager(cfg, broker=broker)
+    store = SessionStore(cfg.state_dir)
+    manager = SessionManager(cfg, broker=broker, store=store)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -98,6 +101,13 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     app.state.config = cfg
     app.state.broker = broker
     app.state.manager = manager
+    app.state.store = store
+
+    # Recarga las sesiones persistidas antes de aceptar tráfico. Se hace aquí y
+    # no en `lifespan` para que los tests con TestClient (que no ejecutan
+    # lifespan) vean el mismo estado que un servidor real.
+    for problem in manager.restore():
+        logging.getLogger(__name__).warning("Sesión persistida descartada: %s", problem)
 
     # CORS solo para los orígenes configurados (dev server de Vite y webview de
     # Tauri). Nunca `*`: el agente ejecuta cambios reales en el filesystem.
