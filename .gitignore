@@ -31,3 +31,6 @@ htmlcov/
 audit.jsonl
 cowork-clone.db
 sandbox/
+
+# Estado en runtime de la API (logs de sesión por sesión)
+api-state/

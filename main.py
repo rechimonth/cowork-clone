@@ -18,7 +18,7 @@ from audit_logger import AuditLogger
 from file_manager import build_file_items, scan_directory
 from models import ExecutionPlan, FileItem, PlannerInput
 from os_commands import execute_plan
-from planner import plan_actions
+from planner import FileAnalysisProvider, plan_actions
 from user_validation import ApprovalDecision, format_plan, request_user_approval
 
 
@@ -51,6 +51,7 @@ class CoworkAgent:
     dry_run: bool = False
     logger: AuditLogger | None = None
     callbacks: AgentCallbacks = field(default_factory=AgentCallbacks)
+    llm: FileAnalysisProvider | None = None
 
     plan: ExecutionPlan | None = None
     items: list[FileItem] = field(default_factory=list)
@@ -78,7 +79,7 @@ class CoworkAgent:
         Requiere haber llamado antes a :meth:`scan`.
         """
         planner_input = PlannerInput(root_dir=self.root_dir, files=self.items)
-        self.plan = plan_actions(planner_input).plan
+        self.plan = plan_actions(planner_input, llm=self.llm).plan
         self._log("PLAN_GENERATED", {"summary": self.plan.summary})
         return self.plan
 

@@ -40,6 +40,54 @@ Ejemplo en modo simulación:
 python main.py "./mi_carpeta" --dry-run --log audit.jsonl
 ```
 
+## API (FastAPI)
+
+El mismo ciclo `scan -> plan -> HITL -> execute` está expuesto por HTTP y
+WebSocket para que un frontend (React/Tauri) lo maneje sin bloquear la terminal.
+El orquestador es único: CLI y API comparten `CoworkAgent`.
+
+```bash
+export COWORK_API_TOKEN="un-token-largo-y-secreto"
+uvicorn api.app:app --host 127.0.0.1 --port 8000
+```
+
+Endpoints (todos requieren `Authorization: Bearer <token>` salvo `/health`):
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `GET` | `/health` | Estado del servicio (público). |
+| `POST` | `/sessions` | Crea una sesión sobre un `root_dir` autorizado. |
+| `GET` | `/sessions` | Lista las sesiones activas. |
+| `GET` | `/sessions/{id}` | Estado y plan de la sesión. |
+| `GET` | `/sessions/{id}/plan` | Solo el plan propuesto. |
+| `POST` | `/sessions/{id}/approval` | Resuelve el HITL: `{"decision": "approve"\|"reject"}`. |
+| `DELETE` | `/sessions/{id}` | Descarta una sesión terminada. |
+| `GET` | `/sessions/{id}/events` | Eventos acumulados (polling). |
+| `WS` | `/sessions/{id}/ws?token=...` | Stream de eventos en vivo. |
+
+La configuración es explícita y sin valores peligrosos por defecto:
+
+| Variable | Default | Descripción |
+| --- | --- | --- |
+| `COWORK_API_TOKEN` | *(ninguno)* | Obligatorio; sin él la API no arranca. Mínimo 16 caracteres. |
+| `COWORK_ALLOWED_ROOTS` | *(ninguno)* | Raíces permitidas, separadas por comas. Vacío = cualquiera salvo las rutas sensibles bloqueadas. |
+| `COWORK_STATE_DIR` | `./api-state` | Directorio de logs de auditoría por sesión. |
+| `COWORK_CORS_ORIGINS` | dev server de Vite + Tauri | Orígenes permitidos, separados por comas. |
+| `COWORK_APPROVAL_TIMEOUT_S` | `300` | Timeout del HITL: al expirar se rechaza por seguridad. |
+| `COWORK_ALLOW_INSECURE` | `false` | Permite correr sin token y sin TLS (solo para desarrollo local). |
+| `COWORK_MAX_SESSIONS` | `50` | Sesiones concurrentes máximas. |
+
+Controles de seguridad destacados:
+
+- Las sesiones solo pueden operar dentro de un `root_dir` autorizado; `/`, `/etc`,
+  `/usr` y el resto de raíces del sistema están bloqueados.
+- La aprobación exige que la sesión esté en `awaiting_approval`; si no, responde
+  `409` en lugar de aprobar por accidente.
+- El token se acepta por cabecera `Authorization`, por query param o por
+  subprotocolo WebSocket (útil para clientes que no pueden fijar cabeceras).
+- Los eventos de cada sesión quedan en un log JSONL correlacionado por
+  `session_id`.
+
 ## Tests
 
 ```bash

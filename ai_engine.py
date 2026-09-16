@@ -681,7 +681,7 @@ def build_prompt(planner_input: PlannerInput) -> str:
 
 
 def _classify_pdfs(
-    provider: OllamaProvider,
+    provider: FileAnalysisProvider,
     pdfs: list[FileItem],
     max_workers: int,
 ) -> list[FileAnalysis]:
@@ -719,7 +719,7 @@ def _classify_pdfs(
 
 def propose_execution_plan(
     planner_input: PlannerInput,
-    llm: OllamaProvider | None = None,
+    llm: FileAnalysisProvider | None = None,
     max_workers: int = DEFAULT_LLM_MAX_WORKERS,
 ) -> PlannerOutput:
     """Genera un ``ExecutionPlan`` usando el LLM SOLO para sugerencias.

@@ -84,9 +84,45 @@ preparado:
 - [x] I/O inyectable (callbacks en lugar de `print`/`input` fijos).
 - [x] Endpoint y API key del LLM configurables por entorno.
 - [x] Contrato de aprobación `ApprovalDecision` serializable.
-- [ ] Endpoint `POST /scan` y `POST /approve` en FastAPI.
-- [ ] Canal WebSocket para emitir el plan y recibir la decisión.
-- [ ] Ejecución en worker de fondo con estado consultable.
+- [x] Backend FastAPI con sesiones, HITL por HTTP y stream por WebSocket.
+- [ ] Cliente Tauri/React sobre el contrato de eventos ya publicado.
+- [ ] Persistencia de sesiones entre reinicios del backend.
+
+## Backend FastAPI (`api/`)
+
+La capa HTTP no reimplementa el agente: instancia el mismo `CoworkAgent` y
+sustituye los callbacks de I/O. Ese es el punto central del diseño.
+
+- `api/config.py`: `ApiConfig.from_env()` + `validate_root_dir()`. Postura
+  cerrada por defecto: sin token no arranca, y las raíces del sistema
+  (`/etc`, `/usr`, `/bin`, …) se rechazan resolviendo symlinks antes de comparar.
+- `api/schemas.py`: contrato Pydantic que consume el frontend. Todo lo que sale
+  por HTTP o WebSocket pasa por aquí.
+- `api/sessions.py`: `SessionManager` + `Session`. Cada sesión corre el ciclo del
+  agente en un hilo propio y se sincroniza con el HITL mediante un `Event`.
+- `api/events.py`: `EventBroker`, puente entre el hilo del agente (síncrono) y
+  las colas asyncio de los WebSockets.
+- `api/app.py`: `create_app(config)` — autenticación, endpoints REST y WebSocket.
+
+### Invariantes del backend
+
+- El HITL solo se resuelve si la sesión está en `awaiting_approval`; en cualquier
+  otro estado responde `409`. Nunca se aprueba por defecto.
+- Al expirar el timeout del HITL la sesión se rechaza, no se aprueba.
+- La clasificación por defecto es offline (`OfflineFileAnalysisProvider`): una
+  petición HTTP no puede quedar colgada esperando a Ollama. Para usar el LLM real
+  se inyecta `OllamaProvider()` en `SessionManager`.
+- Todo evento del agente se registra en un JSONL por sesión con `session_id` en
+  cada línea, incluidos los que emite el núcleo (que no conoce el concepto de
+  sesión).
+
+### Riesgo conocido
+
+`os_commands._ensure_within_root` valida la ruta resuelta antes de operar, pero
+entre la validación y el `rename` hay una ventana TOCTOU: si un atacante con
+escritura en el root reemplaza el destino por un symlink en ese instante, el
+rename podría seguir el enlace. Mitigarlo requiere `openat`/`O_NOFOLLOW` y queda
+como deuda técnica; el modelo de amenazas asume que el root es del propio usuario.
 
 ## Módulos experimentales
 
