@@ -48,8 +48,10 @@ El orquestador es único: CLI y API comparten `CoworkAgent`.
 
 ```bash
 export COWORK_API_TOKEN="un-token-largo-y-secreto"
-uvicorn api.app:app --host 127.0.0.1 --port 8000
+uvicorn api.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
+
+`create_app` es un *factory*: uvicorn necesita `--factory`.
 
 Endpoints (todos requieren `Authorization: Bearer <token>` salvo `/health`):
 

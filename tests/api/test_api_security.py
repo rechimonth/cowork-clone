@@ -216,6 +216,27 @@ def test_config_rejects_short_token():
         config.validate()
 
 
+def test_uvicorn_factory_command_resolves(monkeypatch, tmp_path):
+    """El comando documentado para arrancar el servidor debe funcionar.
+
+    `create_app` es un factory, asi que la unica forma correcta de invocarlo
+    desde uvicorn es `api.app:create_app --factory`. Importar el modulo no debe
+    exigir un token; la validacion ocurre al construir la app.
+    """
+    import importlib
+
+    monkeypatch.delenv("COWORK_API_TOKEN", raising=False)
+    monkeypatch.delenv("COWORK_ALLOW_INSECURE", raising=False)
+
+    module = importlib.import_module("api.app")
+    assert callable(module.create_app)
+    # Sin token la construccion falla, pero el import de arriba ya tuvo exito:
+    # el error no es un fallo de importacion/carga de modulo.
+    monkeypatch.setenv("COWORK_STATE_DIR", str(tmp_path / "state"))
+    with pytest.raises(ConfigurationError):
+        module.create_app()
+
+
 def test_create_app_refuses_to_start_without_token(monkeypatch, tmp_path):
     monkeypatch.delenv("COWORK_ALLOW_INSECURE", raising=False)
     monkeypatch.setenv("COWORK_STATE_DIR", str(tmp_path / "state"))
