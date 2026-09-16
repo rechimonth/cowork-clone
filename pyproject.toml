@@ -26,6 +26,25 @@ dev = [
     "bandit[toml]>=1.7",
 ]
 
+# El proyecto es flat-layout: modulos sueltos en la raiz + el paquete `api`
+# (backend) y `experimental` (fuera del flujo principal). La autodeteccion de
+# setuptools falla al encontrar mas de un paquete de nivel superior, asi que el
+# layout se declara de forma explicita en lugar de depender del descubrimiento.
+[tool.setuptools]
+py-modules = [
+    "ai_engine",
+    "audit_logger",
+    "file_manager",
+    "main",
+    "models",
+    "os_commands",
+    "planner",
+    "storage_manager",
+    "transaction_manager",
+    "user_validation",
+]
+packages = ["api", "experimental"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
