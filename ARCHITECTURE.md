@@ -87,7 +87,7 @@ preparado:
 - [x] Backend FastAPI con sesiones, HITL por HTTP y stream por WebSocket.
 - [x] Cliente React sobre el contrato de eventos ya publicado.
 - [x] Shell Tauri (`frontend/src-tauri/`) con CSP restringida a los orígenes locales del backend.
-- [ ] Verificar el empaquetado de Tauri en CI (requiere toolchain de Rust y dependencias nativas).
+- [x] Empaquetado de Tauri verificado en CI (job `tauri`).
 - [x] Persistencia de sesiones entre reinicios del backend.
 
 ## Backend FastAPI (`api/`)
@@ -135,6 +135,34 @@ entre la validación y el `rename` hay una ventana TOCTOU: si un atacante con
 escritura en el root reemplaza el destino por un symlink en ese instante, el
 rename podría seguir el enlace. Mitigarlo requiere `openat`/`O_NOFOLLOW` y queda
 como deuda técnica; el modelo de amenazas asume que el root es del propio usuario.
+
+## Shell de escritorio (Tauri)
+
+`frontend/src-tauri/` empaqueta el cliente React como aplicación nativa. El shell
+Rust **no** reimplementa nada del agente: solo abre el webview. Todo el acceso al
+filesystem vive en el backend FastAPI, que corre como proceso aparte. Ese reparto
+es deliberado — el agente necesita permisos sobre el filesystem y no conviene
+dárselos al webview.
+
+Piezas del empaquetado:
+
+- `tauri.conf.json`: ventana 1024x768, CSP que solo permite conectarse a los
+  orígenes locales del backend, y `bundle.icon` con los formatos de cada
+  plataforma. `category: Utility` clasifica la app en los menús del sistema.
+- `capabilities/default.json`: permisos mínimos (`core:default`). El webview no
+  puede tocar el filesystem ni el shell; si algún día necesita un permiso extra,
+  debe declararse aquí explícitamente.
+- `icons/`: juego completo generado con `npm run tauri icon <png>`. Es un
+  requisito del build, no un adorno: `tauri::generate_context!()` falla al
+  compilar si falta `icons/icon.png`, y el empaquetado de AppImage falla si no
+  hay un icono cuadrado declarado en `bundle.icon`.
+- `Cargo.lock`: versionado para que la resolución de dependencias sea
+  reproducible en CI.
+
+El job `tauri` de CI compila el shell, ejecuta `cargo fmt --check` y
+`cargo clippy -D warnings`, y genera los instaladores `.deb` y `.AppImage` como
+artefactos. Verificarlo solo con `tsc`/`vite` no bastaba: el shell podía estar
+roto sin que ningún job lo notara.
 
 ## Módulos experimentales
 

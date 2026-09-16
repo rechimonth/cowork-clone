@@ -77,6 +77,80 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+
+  tauri:
+    name: Desktop shell (Tauri)
+    runs-on: ubuntu-22.04
+    needs: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v7
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Check Rust formatting
+        working-directory: frontend/src-tauri
+        run: cargo fmt --check
+
+      - name: Lint Rust (clippy)
+        working-directory: frontend/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Package installers
+        working-directory: frontend
+        run: npm run tauri build -- --bundles deb,appimage
+
+      - name: Verify bundles were produced
+        run: |
+          set -euo pipefail
+          ls -lh frontend/src-tauri/target/release/bundle/deb/*.deb
+          ls -lh frontend/src-tauri/target/release/bundle/appimage/*.AppImage
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: tauri-installers
+          path: |
+            frontend/src-tauri/target/release/bundle/deb/*.deb
+            frontend/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
   security:
     name: Security scan (bandit)
     runs-on: ubuntu-latest

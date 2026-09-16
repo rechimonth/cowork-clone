@@ -137,8 +137,13 @@ de Tauri):
 
 ```bash
 npm run tauri dev      # desarrollo dentro del webview
-npm run tauri build    # instalador
+npm run tauri build    # instaladores (.deb, .rpm, .AppImage en Linux)
 ```
+
+En Debian/Ubuntu las dependencias nativas son `libwebkit2gtk-4.1-dev`,
+`libayatana-appindicator3-dev`, `librsvg2-dev` y `patchelf`. El juego de iconos
+de `frontend/src-tauri/icons/` forma parte del build: si falta, la compilación
+del shell falla, así que no debe borrarse ni añadirse a `.gitignore`.
 
 El backend se ejecuta como proceso aparte; la ventana de Tauri solo carga el
 webview. Esa separación es deliberada: el agente necesita permisos de
