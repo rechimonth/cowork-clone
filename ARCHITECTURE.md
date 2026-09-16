@@ -128,13 +128,30 @@ sustituye los callbacks de I/O. Ese es el punto central del diseño.
   movidos; y su `root_dir` se revalida contra la configuración *actual*, de modo
   que endurecer `COWORK_ALLOWED_ROOTS` no reabra accesos antiguos.
 
-### Riesgo conocido
+### Defensa contra TOCTOU
 
-`os_commands._ensure_within_root` valida la ruta resuelta antes de operar, pero
-entre la validación y el `rename` hay una ventana TOCTOU: si un atacante con
-escritura en el root reemplaza el destino por un symlink en ese instante, el
-rename podría seguir el enlace. Mitigarlo requiere `openat`/`O_NOFOLLOW` y queda
-como deuda técnica; el modelo de amenazas asume que el root es del propio usuario.
+Validar la ruta resuelta y después operar sobre el string deja una ventana: entre
+la comprobación y el `rename` un atacante con escritura en el root puede
+reemplazar un componente por un symlink y desviar la operación fuera del root.
+Repetir la validación no lo arregla — siempre queda un hueco entre el último
+chequeo y el uso.
+
+`os_commands` lo cierra no volviendo a resolver rutas: abre el root una vez y
+navega cada componente con `openat` (`dir_fd`) y `O_NOFOLLOW`, de modo que un
+componente que sea symlink falla con `ELOOP` en el instante de abrirlo. La
+operación se aplica relativa al descriptor del directorio ya abierto
+(`os.rename(..., dst_dir_fd=fd)`), así que la resolución ocurre una sola vez.
+
+Como el `rename` pisa el destino en silencio, la escritura de archivos usa
+`os.link` + `os.unlink`: `link` es atómico sobre la existencia del destino
+(`EEXIST` si está ocupado) y el origen se desenlaza solo tras enlazar, de modo que
+un fallo nunca pierde datos. Los directorios, que no admiten enlace duro, se
+renombran directamente.
+
+`_ensure_within_root` se mantiene como validación temprana —barata y con buenos
+mensajes— para abortar planes malformados antes de abrir ningún descriptor, pero
+la garantía la da la navegación por descriptores. En Windows, sin `dir_fd`, se
+degrada al modo por ruta y el proceso lo advierte por el log.
 
 ## Shell de escritorio (Tauri)
 

@@ -32,9 +32,10 @@
 
 ## Deuda técnica pendiente
 
-- [ ] Cerrar la ventana TOCTOU entre validación de rutas y ejecución (ver `SECURITY.md`).
 - [ ] Incorporar `experimental/browser_agent.py` y `dashboard.py` al flujo principal
       cuando el camino base esté cerrado.
 - [ ] Evaluar si `storage_manager.py` debe reemplazar el log JSONL por consultas SQLite.
+- [ ] Cerrar la ventana TOCTOU también en Windows: `dir_fd` no existe allí, así que
+      la ejecución degrada al modo por ruta.
 
 

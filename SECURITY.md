@@ -74,14 +74,20 @@ con el contenido leído.
 - Usar HTTPS para cualquier Ollama que no esté en la misma máquina.
 - Revisar `audit.jsonl` ante comportamiento inesperado: registra planes,
   decisiones HITL, ejecuciones y errores.
-- El endpoint HTTP del agente todavía no existe; cuando se añada FastAPI deberá
-  autenticar y autorizar cada petición antes de invocar `CoworkAgent`.
+- La API HTTP autentica cada petición con una API key (`COWORK_API_KEY`) antes de
+  invocar `CoworkAgent`; sin ella, los endpoints de sesión responden 401.
 
 ## Limitaciones conocidas
 
-- **TOCTOU**: la validación de rutas ocurre antes de la llamada al filesystem.
-  Un symlink creado en esa ventana podría redirigir la operación. Mitigado en la
-  práctica por el HITL, que introduce revisión humana entre plan y ejecución.
+- **TOCTOU: cerrada en plataformas con `openat`/`dir_fd`** (Linux, macOS). La
+  ejecución de planes no vuelve a resolver rutas: navega el root componente a
+  componente con `openat` + `O_NOFOLLOW` y opera relativo a descriptores, así que
+  un symlink colocado entre la validación y la operación provoca `ELOOP` en vez
+  de redirigirla. Los archivos se mueven con `link` + `unlink` en lugar de
+  `rename`, de modo que la comprobación de colisión y la creación son una sola
+  operación atómica y un destino no puede pisarse. En Windows, donde `dir_fd` no
+  existe, se degrada al modo por ruta y **la ventana TOCTOU permanece**: el
+  proceso lo advierte por el log al arrancar la ejecución.
 - El HITL por terminal es de un solo usuario; el control de acceso multi-usuario
   llega con la API.
 - Los previews de documentos se envían al LLM. Con un proveedor remoto esto
