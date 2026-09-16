@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permisos minimos: el webview solo necesita abrir la ventana. No accede al filesystem ni al shell; todo eso lo hace el backend FastAPI.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

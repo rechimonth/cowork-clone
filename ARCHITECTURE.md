@@ -85,7 +85,9 @@ preparado:
 - [x] Endpoint y API key del LLM configurables por entorno.
 - [x] Contrato de aprobación `ApprovalDecision` serializable.
 - [x] Backend FastAPI con sesiones, HITL por HTTP y stream por WebSocket.
-- [ ] Cliente Tauri/React sobre el contrato de eventos ya publicado.
+- [x] Cliente React sobre el contrato de eventos ya publicado.
+- [x] Shell Tauri (`frontend/src-tauri/`) con CSP restringida a los orígenes locales del backend.
+- [ ] Verificar el empaquetado de Tauri en CI (requiere toolchain de Rust y dependencias nativas).
 - [ ] Persistencia de sesiones entre reinicios del backend.
 
 ## Backend FastAPI (`api/`)

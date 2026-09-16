@@ -90,6 +90,40 @@ Controles de seguridad destacados:
 - Los eventos de cada sesión quedan en un log JSONL correlacionado por
   `session_id`.
 
+## Frontend (React + Tauri)
+
+`frontend/` es el cliente de escritorio. Consume la misma API por HTTP y
+WebSocket: lista el plan, muestra los renombres propuestos y envía la decisión
+HITL. No accede al filesystem ni ejecuta nada por su cuenta; toda la operación
+sigue viviendo en el backend.
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:1420
+```
+
+El dev server usa el puerto `1420` para coincidir con `COWORK_CORS_ORIGINS`; si
+se cambia, hay que actualizar esa variable.
+
+Para empaquetar la app de escritorio (requiere Rust y las dependencias nativas
+de Tauri):
+
+```bash
+npm run tauri dev      # desarrollo dentro del webview
+npm run tauri build    # instalador
+```
+
+El backend se ejecuta como proceso aparte; la ventana de Tauri solo carga el
+webview. Esa separación es deliberada: el agente necesita permisos de
+filesystem que no conviene conceder al webview. La CSP en
+`frontend/src-tauri/tauri.conf.json` limita las conexiones a los orígenes
+locales del backend.
+
+El token se guarda solo en memoria (estado de React): nunca en `localStorage`
+ni en cookies, para que no sobreviva al cierre de la app ni quede expuesto a
+XSS.
+
 ## Tests
 
 ```bash
@@ -98,6 +132,12 @@ pytest --cov
 
 Cubre la suite principal y `experimental/tests`. Umbral mínimo de cobertura
 configurado en `pyproject.toml`.
+
+Para el frontend:
+
+```bash
+cd frontend && npm run typecheck
+```
 
 ## Calidad
 
@@ -108,7 +148,8 @@ mypy .           # tipos
 bandit -r . -x ./tests,./experimental/tests
 ```
 
-Todo esto corre en CI (`.github/workflows/ci.yml`) sobre Python 3.11 y 3.13.
+Todo esto corre en CI (`.github/workflows/ci.yml`) sobre Python 3.11 y 3.13,
+más el job de frontend (tipos y build) sobre Node 22.
 
 ## Variables de entorno
 
@@ -131,6 +172,8 @@ warning y registra `INSECURE_ENDPOINT` en la auditoría.
 - `audit_logger.py`: registro de acciones, decisiones y errores.
 - `models.py`: schemas Pydantic compartidos.
 - `transaction_manager.py`, `storage_manager.py`: soporte de rollback y persistencia (usados por tests).
+- `api/`: backend FastAPI (HTTP + WebSocket) que orquesta el mismo `CoworkAgent`.
+- `frontend/`: cliente React; `frontend/src-tauri/` es el shell de escritorio.
 - `experimental/`: módulos exploratorios fuera del flujo principal.
 
 ## Documentación
@@ -142,9 +185,11 @@ warning y registra `INSECURE_ENDPOINT` en la auditoría.
 
 ## Próximas mejoras recomendadas
 
-- Exponer el agente como API (`FastAPI`) y aprobar el plan vía HTTP/WebSocket
-  para integrarlo con un frontend de React/Tauri.
+- Generar los tipos del frontend desde el OpenAPI del backend para eliminar la
+  duplicación manual de `frontend/src/api/types.ts`.
 - Endurecer la validación Pydantic del plan en el borde de la API.
+- Empaquetar el backend junto a la app de Tauri (sidecar) para que el usuario no
+  tenga que arrancar `uvicorn` a mano.
 - Incorporar herramientas adicionales (browser, automatización) desde
   `experimental/` cuando el flujo base esté cerrado.
 - Métricas y dashboard operativo (ver `experimental/`).
