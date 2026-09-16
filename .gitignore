@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Entorno / secretos
+.env
+.env.*
+!.env.example
+
+# Artefactos de herramientas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.bandit/
+
+# Logs y datos locales del agente
+*.log
+audit.jsonl
+cowork-clone.db
+sandbox/
+
+# Estado en runtime de la API (logs de sesión por sesión)
+api-state/

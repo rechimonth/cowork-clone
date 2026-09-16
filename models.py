@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
@@ -32,9 +32,7 @@ class CreateDirAction(BaseModel):
 class ExecutionPlan(BaseModel):
     plan_id: str | None = Field(default_factory=lambda: str(uuid4()))
     execution_id: str | None = Field(default_factory=lambda: str(uuid4()))
-    created_at: str | None = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str | None = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     summary: str
     create_dirs: list[CreateDirAction] = Field(default_factory=list)
@@ -50,7 +48,6 @@ class FileAnalysis(BaseModel):
     reason: str
 
 
-
 class PlannerInput(BaseModel):
     root_dir: str
     files: list[FileItem]
@@ -58,4 +55,3 @@ class PlannerInput(BaseModel):
 
 class PlannerOutput(BaseModel):
     plan: ExecutionPlan
-

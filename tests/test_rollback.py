@@ -1,5 +1,3 @@
-import pathlib
-
 from transaction_manager import TransactionManager
 
 
@@ -33,4 +31,3 @@ def test_transaction_manager_rollback_rename_chain(tmp_path):
     assert not b.exists() or b.exists() is False
     assert not c.exists()
     assert not d.exists()
-

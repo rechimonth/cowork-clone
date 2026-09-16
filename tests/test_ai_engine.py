@@ -1,6 +1,11 @@
 from typing import Any
 
-from ai_engine import FileAnalysis, OllamaProvider, parse_file_analysis_json, safe_filename
+from ai_engine import (
+    FileAnalysis,
+    OllamaProvider,
+    parse_file_analysis_json,
+    safe_filename,
+)
 
 
 def test_safe_filename_windows_compatible():
@@ -81,3 +86,44 @@ def test_ollama_provider_fallback_on_bad_json(monkeypatch):
     assert out.category == "unknown"
     assert out.suggested_name == "file.pdf"
     assert out.reason == "fallback"
+
+
+def test_parser_handles_markdown_fence_without_closing():
+    analysis = parse_file_analysis_json(
+        '```json\n{"category": "invoice", "suggested_name": "f", "reason": "r"}'
+    )
+    assert analysis.category == "invoice"
+
+
+def test_parser_handles_single_quotes():
+    analysis = parse_file_analysis_json(
+        "{'category': 'invoice', 'suggested_name': 'f', 'reason': 'r'}"
+    )
+    assert analysis.category == "invoice"
+
+
+def test_parser_ignores_non_conforming_objects_before_valid_one():
+    analysis = parse_file_analysis_json(
+        '{"meta": 1} y luego {"category": "invoice", "suggested_name": "f", "reason": "r"}'
+    )
+    assert analysis.suggested_name == "f"
+
+
+def test_parser_raises_without_fallback():
+    import pytest
+
+    with pytest.raises(ValueError):
+        parse_file_analysis_json("no hay json aqui")
+
+
+def test_parser_fallback_to_target_is_sanitized():
+    out = parse_file_analysis_json("../..//evil.pdf", fallback_to="../../evil.pdf")
+    assert out.category == "unknown"
+    assert "/" not in out.suggested_name
+
+
+def test_parser_sanitizes_suggested_name_from_llm():
+    out = parse_file_analysis_json(
+        '{"category": "invoice", "suggested_name": "../../etc/passwd", "reason": "r"}'
+    )
+    assert "/" not in out.suggested_name

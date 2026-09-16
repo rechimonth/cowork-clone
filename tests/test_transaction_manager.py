@@ -1,5 +1,3 @@
-import pathlib
-
 from transaction_manager import TransactionManager
 
 
@@ -18,4 +16,3 @@ def test_transaction_manager_records_and_rollbacks_mkdir(tmp_path):
 
     tm.rollback()
     assert not created.exists()
-

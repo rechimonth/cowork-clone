@@ -12,7 +12,30 @@
 - [x] Agregar `requirements.txt`.
 - [x] Agregar `README.md` con instrucciones para correr y probar.
 - [x] Probar localmente con una carpeta de ejemplo y verificar que NO se ejecuta nada sin Y/N.
-- [ ] Conectar un LLM real (Ollama/llama.cpp) + parseo robusto del JSON con Pydantic.
-- [ ] Añadir validación adicional: evitar colisiones de nombres y garantizar unicidad del destino.
+- [x] Conectar un LLM real (Ollama/llama.cpp) + parseo robusto del JSON con Pydantic.
+- [x] Añadir validación adicional: evitar colisiones de nombres y garantizar unicidad del destino.
+- [x] HITL con timeout (60s) y límite de entradas inválidas (aborta por seguridad).
+- [x] Endpoint/API key del LLM configurables por entorno (`OLLAMA_ENDPOINT`, `OLLAMA_API_KEY`).
+- [x] Desacoplar I/O (`CoworkAgent` + `AgentCallbacks`) para reutilizar el orquestador desde una API.
+- [x] Endurecer seguridad: path traversal, colisiones, saneamiento de nombres, whitelist de operaciones.
+- [x] Configurar calidad: `ruff`, `mypy`, `pytest-cov` con umbral, `bandit` y CI en GitHub Actions.
+- [x] Exponer el agente como API FastAPI y aprobar el plan vía HTTP/WebSocket (frontend Tauri).
+
+## Fase 2 (Backend + Frontend)
+
+- [x] `POST /scan` y `POST /plan` en FastAPI devolviendo el `ExecutionPlan` serializado.
+- [x] `POST /approve` que resuelva `ApprovalDecision` sin bloquear la terminal.
+- [x] Canal WebSocket para emitir progreso y recibir la decisión del frontend.
+- [x] Autenticación y autorización por usuario antes de invocar `CoworkAgent`.
+- [x] Ejecución en worker de fondo con estado consultable.
+- [x] Cliente Tauri/React consumiendo la API.
+
+## Deuda técnica pendiente
+
+- [ ] Incorporar `experimental/browser_agent.py` y `dashboard.py` al flujo principal
+      cuando el camino base esté cerrado.
+- [ ] Evaluar si `storage_manager.py` debe reemplazar el log JSONL por consultas SQLite.
+- [ ] Cerrar la ventana TOCTOU también en Windows: `dir_fd` no existe allí, así que
+      la ejecución degrada al modo por ruta.
 
 
