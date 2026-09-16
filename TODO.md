@@ -19,16 +19,16 @@
 - [x] Desacoplar I/O (`CoworkAgent` + `AgentCallbacks`) para reutilizar el orquestador desde una API.
 - [x] Endurecer seguridad: path traversal, colisiones, saneamiento de nombres, whitelist de operaciones.
 - [x] Configurar calidad: `ruff`, `mypy`, `pytest-cov` con umbral, `bandit` y CI en GitHub Actions.
-- [ ] Exponer el agente como API FastAPI y aprobar el plan vía HTTP/WebSocket (frontend Tauri).
+- [x] Exponer el agente como API FastAPI y aprobar el plan vía HTTP/WebSocket (frontend Tauri).
 
 ## Fase 2 (Backend + Frontend)
 
-- [ ] `POST /scan` y `POST /plan` en FastAPI devolviendo el `ExecutionPlan` serializado.
-- [ ] `POST /approve` que resuelva `ApprovalDecision` sin bloquear la terminal.
-- [ ] Canal WebSocket para emitir progreso y recibir la decisión del frontend.
-- [ ] Autenticación y autorización por usuario antes de invocar `CoworkAgent`.
-- [ ] Ejecución en worker de fondo con estado consultable.
-- [ ] Cliente Tauri/React consumiendo la API.
+- [x] `POST /scan` y `POST /plan` en FastAPI devolviendo el `ExecutionPlan` serializado.
+- [x] `POST /approve` que resuelva `ApprovalDecision` sin bloquear la terminal.
+- [x] Canal WebSocket para emitir progreso y recibir la decisión del frontend.
+- [x] Autenticación y autorización por usuario antes de invocar `CoworkAgent`.
+- [x] Ejecución en worker de fondo con estado consultable.
+- [x] Cliente Tauri/React consumiendo la API.
 
 ## Deuda técnica pendiente
 
